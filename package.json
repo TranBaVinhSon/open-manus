@@ -1,0 +1,44 @@
+{
+  "name": "open-manus",
+  "version": "1.0.0",
+  "description": "AI agent for financial research and report generation",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "ts-node src/main.ts",
+    "build": "tsc",
+    "dev": "ts-node-dev --respawn src/main.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^1.2.1",
+    "@browserbasehq/stagehand": "^1.14.0",
+    "@playwright/test": "^1.51.0",
+    "ai": "^4.1.54",
+    "chalk": "^4.1.2",
+    "cheerio": "^1.0.0-rc.12",
+    "commander": "^11.1.0",
+    "dotenv": "^16.0.3",
+    "exa-js": "^1.5.11",
+    "fs-extra": "^11.2.0",
+    "inquirer": "^12.4.3",
+    "marked": "^5.0.2",
+    "node-fetch": "^2.6.9",
+    "openai": "^4.28.0",
+    "ora": "^5.4.1",
+    "stagehand": "^1.0.0",
+    "typescript": "^5.0.4",
+    "vm2": "^3.9.19",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/marked": "^5.0.0",
+    "@types/node": "^18.16.3",
+    "@types/node-fetch": "^2.6.3",
+    "@typescript-eslint/eslint-plugin": "^7.0.2",
+    "@typescript-eslint/parser": "^7.0.2",
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.5",
+    "ts-node": "^10.9.1",
+    "ts-node-dev": "^2.0.0"
+  }
+}
