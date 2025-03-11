@@ -63,3 +63,11 @@ export interface FileOperationResult {
   message: string;
   data?: any;
 }
+
+// Terminal Operation Types
+export interface TerminalResult {
+  success: boolean;
+  output: string;
+  error?: string;
+  exitCode?: number;
+}

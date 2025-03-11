@@ -3,6 +3,7 @@ import { fileOperationsTool } from './file';
 import { Tool } from '../types';
 import { browserTool } from './browser';
 import { javascriptExecutorTool } from './javascript-executor';
+import { terminalTool } from './terminal';
 
 // Export all tools
 export const tools: Record<string, Tool> = {
@@ -10,6 +11,7 @@ export const tools: Record<string, Tool> = {
   browser: browserTool,
   fileOperations: fileOperationsTool,
   javascriptExecutor: javascriptExecutorTool,
+  terminal: terminalTool,
 };
 
 // Get tool by name
@@ -22,4 +24,10 @@ export const getAllTools = (): Tool[] => {
   return Object.values(tools);
 };
 
-export { searchTool, browserTool, fileOperationsTool, javascriptExecutorTool };
+export {
+  searchTool,
+  browserTool,
+  fileOperationsTool,
+  javascriptExecutorTool,
+  terminalTool,
+};

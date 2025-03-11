@@ -19,8 +19,8 @@ export const searchTool: Tool = {
       useAutoprompt: true,
       numResults: 5,
       text: true,
-      highlights: true,
-      summary: true,
+      // highlights: true,
+      // summary: true,
     });
 
     return {

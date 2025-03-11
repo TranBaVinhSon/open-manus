@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { Tool } from '../types/agent';
 // Remove the legacy import and use only the official package
 import { Stagehand, ObserveResult } from '@browserbasehq/stagehand';
-import * as cheerio from 'cheerio';
 import { CoreMessage, generateObject, UserContent } from 'ai';
 import { openai } from '@ai-sdk/openai';
 // Add import for Playwright to handle browser installation
@@ -25,13 +24,30 @@ type AtomicMethod =
   | 'CLOSE'
   | 'SCREENSHOT'
   | 'WAIT'
-  | 'NAVBACK';
+  | 'NAVBACK'
+  | 'HTML';
 
 type Step = {
   text: string;
   reasoning: string;
   tool: AtomicMethod;
   instruction: string;
+};
+
+// Add new types for structured results
+type ExtractedData = {
+  type: string;
+  content: any;
+  metadata?: Record<string, any>;
+};
+
+type BrowserResult = {
+  message: string;
+  steps: Step[];
+  totalSteps: number;
+  completed: boolean;
+  results: ExtractedData[];
+  summary?: string;
 };
 
 export class BrowserTool implements Tool {
@@ -82,7 +98,10 @@ export class BrowserTool implements Tool {
   }
 
   // Main method to execute a goal by breaking it down into atomic steps
-  private async executeGoal(goal: string, providedUrl?: string): Promise<any> {
+  private async executeGoal(
+    goal: string,
+    providedUrl?: string,
+  ): Promise<BrowserResult> {
     // Ensure browsers are installed before proceeding
     await this.ensureBrowsersInstalled();
 
@@ -136,8 +155,8 @@ export class BrowserTool implements Tool {
       let extraction: string | undefined = undefined;
       let stepCount = 1;
       let goalCompleted = false;
-      // Initialize results collection
-      let results: any[] = [];
+      // Initialize results collection with better typing
+      let results: ExtractedData[] = [];
 
       // Step 2+: Iteratively determine and execute next steps until goal is complete or MAX_STEPS reached
       while (true) {
@@ -199,14 +218,23 @@ export class BrowserTool implements Tool {
             result.instruction,
           );
 
-          if (result.tool === 'EXTRACT' || result.tool === 'OBSERVE') {
-            console.log(`Extracted information: ${extraction}`);
-            // Store extracted information in results
-            results.push({
-              step: stepCount,
-              type: result.tool,
-              data: extraction,
-            });
+          if (
+            result.tool === 'EXTRACT' ||
+            result.tool === 'OBSERVE' ||
+            result.tool === 'HTML'
+          ) {
+            console.log(
+              `Extracted information: ${typeof extraction === 'string' ? extraction : JSON.stringify(extraction)}`,
+            );
+
+            // Process and structure the extracted data
+            const processedData = await this.processExtractedData(
+              extraction,
+              result.tool as 'EXTRACT' | 'OBSERVE' | 'HTML',
+              result.instruction,
+            );
+
+            results.push(processedData);
           }
         } catch (error) {
           console.error(`Error executing step ${stepCount}:`, error);
@@ -227,6 +255,9 @@ export class BrowserTool implements Tool {
         }
       }
 
+      // Generate a summary before returning results
+      const summary = await this.generateResultsSummary(results, goal);
+
       return {
         message: goalCompleted
           ? 'Task completed successfully'
@@ -240,7 +271,8 @@ export class BrowserTool implements Tool {
         steps: previousSteps,
         totalSteps: stepCount,
         completed: goalCompleted,
-        results: results,
+        results,
+        summary,
       };
     } catch (error) {
       console.error('Error executing goal:', error);
@@ -293,9 +325,7 @@ export class BrowserTool implements Tool {
             fullPage: true,
           });
           // Convert Buffer to base64 string
-          const cdpSession = await page.context().newCDPSession(page);
-          const { data } = await cdpSession.send('Page.captureScreenshot');
-          return data;
+          return Buffer.from(screenshotBuffer).toString('base64');
         }
         case 'WAIT':
           await new Promise((resolve) =>
@@ -305,6 +335,9 @@ export class BrowserTool implements Tool {
         case 'NAVBACK':
           await page.goBack();
           break;
+        case 'HTML':
+          // Use Playwright's page.content() to extract full page HTML
+          return await page.content();
         default:
           throw new Error(`Unsupported atomic method: ${method}`);
       }
@@ -353,6 +386,7 @@ Important guidelines:
 1. Break down complex actions into individual atomic steps.
 2. For ACT commands, use only one action at a time.
 3. Avoid combining multiple actions in one instruction.
+4. For steps that don't require browser interaction (like analyzing extracted HTML), use "CLOSE" to finish the task.
 If the goal has been achieved, return "CLOSE".`,
       },
     ];
@@ -375,7 +409,11 @@ If the goal has been achieved, return "CLOSE".`,
     if (previousExtraction) {
       content.push({
         type: 'text',
-        text: `The result of the previous ${Array.isArray(previousExtraction) ? 'observation' : 'extraction'} is: ${previousExtraction}.`,
+        text: `The result of the previous ${Array.isArray(previousExtraction) ? 'observation' : 'extraction'} is: ${
+          typeof previousExtraction === 'string'
+            ? previousExtraction
+            : JSON.stringify(previousExtraction)
+        }`,
       });
     }
 
@@ -398,6 +436,7 @@ If the goal has been achieved, return "CLOSE".`,
           'SCREENSHOT',
           'WAIT',
           'NAVBACK',
+          'HTML',
         ]),
         instruction: z.string(),
       }),
@@ -439,6 +478,125 @@ Return a URL that would be most effective for achieving this goal.`,
     });
 
     return result.object;
+  }
+
+  // Add new helper method to process extracted data
+  private async processExtractedData(
+    data: any,
+    tool: 'EXTRACT' | 'OBSERVE' | 'HTML',
+    instruction: string,
+  ): Promise<ExtractedData> {
+    // Convert non-serializable data to serializable format
+    let processableData = data;
+
+    // If data is not a string or plain object, convert it to a string representation
+    if (
+      typeof data !== 'string' &&
+      typeof data !== 'number' &&
+      typeof data !== 'boolean'
+    ) {
+      try {
+        processableData = JSON.stringify(data);
+      } catch (e) {
+        // If JSON stringification fails, convert to string
+        processableData = String(data);
+      }
+    }
+
+    // For HTML content, we don't need to parse it since Stagehand/Playwright
+    // already provides structured data through its extract/observe methods
+    if (tool === 'HTML' || tool === 'EXTRACT' || tool === 'OBSERVE') {
+      return {
+        type: tool.toLowerCase(),
+        content: processableData,
+        metadata: {
+          tool,
+          instruction,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    }
+
+    // Handle JSON data
+    if (
+      typeof processableData === 'string' &&
+      processableData.trim().startsWith('{')
+    ) {
+      try {
+        const jsonData = JSON.parse(processableData);
+        return {
+          type: 'json',
+          content: jsonData,
+          metadata: {
+            tool,
+            instruction,
+            timestamp: new Date().toISOString(),
+          },
+        };
+      } catch (e) {
+        // If JSON parsing fails, fall through to default handling
+      }
+    }
+
+    // Default handling for other types of data
+    return {
+      type: 'raw',
+      content: processableData,
+      metadata: {
+        tool,
+        instruction,
+        timestamp: new Date().toISOString(),
+      },
+    };
+  }
+
+  // Add method to generate a summary of results
+  private async generateResultsSummary(
+    results: ExtractedData[],
+    goal: string,
+  ): Promise<string> {
+    // Ensure results are serializable
+    const safeResults = results.map((result) => {
+      try {
+        // Test if the result can be serialized
+        JSON.stringify(result);
+        return result;
+      } catch (e) {
+        // If serialization fails, create a safe version
+        return {
+          type: result.type || 'unknown',
+          content:
+            typeof result.content === 'string'
+              ? result.content
+              : 'Non-serializable content',
+          metadata: result.metadata || {
+            note: 'Original metadata was not serializable',
+          },
+        };
+      }
+    });
+
+    const message: CoreMessage = {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: `Given the following extracted data and the original goal: "${goal}", 
+                provide a concise summary of the findings:
+                ${JSON.stringify(safeResults, null, 2)}`,
+        },
+      ],
+    };
+
+    const response = await generateObject({
+      model: openai('gpt-4o'),
+      schema: z.object({
+        summary: z.string(),
+      }),
+      messages: [message],
+    });
+
+    return response.object.summary;
   }
 
   async cleanup() {
