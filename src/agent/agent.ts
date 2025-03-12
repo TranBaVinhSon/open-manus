@@ -1,4 +1,4 @@
-import { getChatCompletion, generatePlan } from '../llm';
+import { getChatCompletion } from '../llm';
 import { tools } from '../tools';
 import { AgentOptions, Plan, Step } from '../types';
 import chalk from 'chalk';
