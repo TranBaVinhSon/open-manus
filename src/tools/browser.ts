@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { Tool } from '../types/agent';
 // Remove the legacy import and use only the official package
 import { Stagehand, ObserveResult } from '@browserbasehq/stagehand';
-import { CoreMessage, generateObject, UserContent } from 'ai';
+import { CoreMessage, generateObject, generateText, UserContent } from 'ai';
 import { openai } from '@ai-sdk/openai';
 // Add import for Playwright to handle browser installation
 import { chromium } from '@playwright/test';
@@ -25,13 +25,18 @@ type AtomicMethod =
   | 'SCREENSHOT'
   | 'WAIT'
   | 'NAVBACK'
-  | 'HTML';
+  | 'HTML'
+  | 'CLOSE'
+  | 'AI_HANDLE';
 
 type Step = {
   text: string;
   reasoning: string;
-  tool: AtomicMethod;
-  instruction: string;
+  method: AtomicMethod;
+  instruction?: string;
+  result?: any; // Store the actual result of the step execution
+  timestamp?: string; // When the step was executed
+  url?: string; // URL at the time of step execution
 };
 
 // Add new types for structured results
@@ -45,7 +50,6 @@ type BrowserResult = {
   message: string;
   steps: Step[];
   totalSteps: number;
-  completed: boolean;
   results: ExtractedData[];
   summary?: string;
 };
@@ -106,7 +110,7 @@ export class BrowserTool implements Tool {
     await this.ensureBrowsersInstalled();
 
     // Get maximum steps from environment variable with default fallback
-    const MAX_STEPS = parseInt(process.env.MAX_STEPS || '20');
+    const MAX_STEPS = parseInt(process.env.MAX_STEPS || '10');
     // Add loop detection variables
     const MAX_SIMILAR_STEPS = 3;
     let similarStepsCount = 0;
@@ -123,36 +127,35 @@ export class BrowserTool implements Tool {
       await stagehandInstance.init();
       console.log(`Breaking down goal: "${goal}" into atomic steps...`);
 
-      // Step 1: Determine starting URL (use provided URL or select one)
-      let startUrl: string;
-      let startUrlReasoning: string;
+      // // Step 1: Determine starting URL (use provided URL or select one)
+      // let startUrl: string;
+      // let startUrlReasoning: string;
 
-      if (providedUrl) {
-        startUrl = providedUrl;
-        startUrlReasoning = 'Using the URL provided in the request';
-      } else {
-        // Select starting URL using LLM
-        const result = await this.selectStartingUrl(goal);
-        startUrl = result.url;
-        startUrlReasoning = result.reasoning;
-      }
+      // if (providedUrl) {
+      //   startUrl = providedUrl;
+      //   startUrlReasoning = 'Using the URL provided in the request';
+      // } else {
+      //   // Select starting URL using LLM
+      //   const result = await this.selectStartingUrl(goal);
+      //   startUrl = result.url;
+      //   startUrlReasoning = result.reasoning;
+      // }
 
-      console.log(`Starting URL: ${startUrl} (Reason: ${startUrlReasoning})`);
+      // console.log(`Starting URL: ${startUrl} (Reason: ${startUrlReasoning})`);
 
       // First step is always navigation to the starting URL
       const firstStep: Step = {
-        text: `Navigating to ${startUrl}`,
-        reasoning: startUrlReasoning,
-        tool: 'GOTO',
-        instruction: startUrl,
+        text: `Navigating to ${providedUrl}`,
+        reasoning: goal,
+        method: 'GOTO',
+        instruction: 'Navigating to the URL provided in the request',
       };
 
       // Execute first step: navigate
       console.log(`Executing step 1: ${firstStep.text}`);
-      await this.runAtomicStep(stagehandInstance, 'GOTO', startUrl);
+      await this.runAtomicStep(stagehandInstance, 'GOTO', providedUrl);
 
       let previousSteps: Step[] = [firstStep];
-      let extraction: string | undefined = undefined;
       let stepCount = 1;
       let goalCompleted = false;
       // Initialize results collection with better typing
@@ -174,27 +177,69 @@ export class BrowserTool implements Tool {
           break;
         }
 
-        // Take screenshot of current state for better context
-        const screenshot = (await this.runAtomicStep(
-          stagehandInstance,
-          'SCREENSHOT',
-        )) as string;
-
         // Use LLM to determine next step based on current state and goal
-        console.log(`Planning step ${stepCount} to achieve goal...`);
         const { result, previousSteps: updatedSteps } = await this.sendPrompt(
           goal,
           stagehandInstance,
           previousSteps,
-          extraction,
+          previousSteps.length > 0
+            ? previousSteps[previousSteps.length - 1].result
+            : undefined,
         );
+
+        // Simple check if the result indicates goal completion
+        if (result.method === 'CLOSE') {
+          console.log(
+            `Goal completion detected in step result. Closing browser.`,
+          );
+          await stagehandInstance.close();
+          goalCompleted = true;
+          previousSteps = updatedSteps;
+          break;
+        }
+
+        // Add current URL and timestamp to step data
+        result.timestamp = new Date().toISOString();
+        try {
+          result.url = await stagehandInstance.page.url();
+        } catch (error) {
+          console.error('Error getting page URL:', error);
+        }
 
         console.log(
-          `Executing step ${stepCount}: ${result.text} (using ${result.tool})`,
+          `Executing step ${stepCount}: ${result.text} (using ${result.method})`,
         );
 
+        // Handle AI_HANDLE tool type
+        if (result.method === 'AI_HANDLE') {
+          console.log(`Delegating task to AI: ${result.instruction}`);
+          try {
+            // Process the task with AI
+            const aiResult = await this.processWithAI(result.instruction!);
+            console.log(`AI result: ${JSON.stringify(aiResult, null, 2)}`);
+
+            // Add the AI result to the results collection
+            results.push({
+              type: 'ai_analysis',
+              content: aiResult,
+              metadata: {
+                tool: 'AI_HANDLE',
+                instruction: result.instruction,
+                timestamp: new Date().toISOString(),
+              },
+            });
+
+            // Update previous steps and continue to next iteration
+            previousSteps = updatedSteps;
+            continue;
+          } catch (error) {
+            console.error(`Error processing with AI: ${error}`);
+            // Fall back to browser-based processing if AI fails
+          }
+        }
+
         // Loop detection: Check if we're repeating the same action
-        const currentAction = `${result.tool}:${result.instruction}`;
+        const currentAction = `${result.method}:${result.instruction}`;
         if (currentAction === lastAction) {
           similarStepsCount++;
           if (similarStepsCount >= MAX_SIMILAR_STEPS) {
@@ -210,28 +255,26 @@ export class BrowserTool implements Tool {
           lastAction = currentAction;
         }
 
-        // Execute the determined step
+        // Only execute browser steps if not handled by AI
+        // Execute the determined step with browser
         try {
-          extraction = await this.runAtomicStep(
+          // Store the result directly in the step data
+          result.result = await this.runAtomicStep(
             stagehandInstance,
-            result.tool,
+            result.method,
             result.instruction,
           );
 
-          if (
-            result.tool === 'EXTRACT' ||
-            result.tool === 'OBSERVE' ||
-            result.tool === 'HTML'
-          ) {
+          if (result.method === 'EXTRACT' || result.method === 'HTML') {
             console.log(
-              `Extracted information: ${typeof extraction === 'string' ? extraction : JSON.stringify(extraction)}`,
+              `Extracted information: ${typeof result.result === 'string' ? result.result : JSON.stringify(result.result)}`,
             );
 
             // Process and structure the extracted data
             const processedData = await this.processExtractedData(
-              extraction,
-              result.tool as 'EXTRACT' | 'OBSERVE' | 'HTML',
-              result.instruction,
+              result.result,
+              result.method as 'EXTRACT' | 'HTML',
+              result.instruction!,
             );
 
             results.push(processedData);
@@ -243,16 +286,6 @@ export class BrowserTool implements Tool {
         }
 
         previousSteps = updatedSteps;
-
-        // If goal is achieved, LLM will return CLOSE action
-        if (result.tool === 'CLOSE') {
-          console.log(
-            `Goal achieved after ${stepCount} steps. Closing browser.`,
-          );
-          await stagehandInstance.close();
-          goalCompleted = true;
-          break;
-        }
       }
 
       // Generate a summary before returning results
@@ -270,7 +303,6 @@ export class BrowserTool implements Tool {
             }`,
         steps: previousSteps,
         totalSteps: stepCount,
-        completed: goalCompleted,
         results,
         summary,
       };
@@ -307,8 +339,23 @@ export class BrowserTool implements Tool {
           await page.act(instruction!);
           break;
         case 'EXTRACT': {
-          const { extraction } = await page.extract(instruction!);
-          return extraction;
+          // TODO: Using native extract API from Stagehand
+          // const { extraction } = await page.extract(instruction!);
+
+          // Check if instruction is defined before proceeding
+          if (!instruction) {
+            throw new Error('EXTRACT method requires an instruction');
+          }
+
+          // Fallback: Get HTML and use AI to extract the data
+          const html = await page.content();
+
+          // Process the HTML with AI to extract the requested data
+          const extractedData = await this.processWithAI(
+            `Extract the following from this HTML: ${instruction}\n\nHTML content: ${html}...`,
+          );
+
+          return extractedData;
         }
         case 'OBSERVE':
           return await page.observe({
@@ -351,7 +398,7 @@ export class BrowserTool implements Tool {
     goal: string,
     stagehandInstance: Stagehand,
     previousSteps: Step[],
-    previousExtraction?: string | ObserveResult[],
+    previousResult?: any,
   ): Promise<{ result: Step; previousSteps: Step[] }> {
     let currentUrl = '';
     try {
@@ -360,10 +407,14 @@ export class BrowserTool implements Tool {
       console.error('Error getting page info:', error);
     }
 
+    // Keep it simple: just check if we have any results from previous steps
+    const hasResults = previousSteps.some((step) => step.result);
+
     const content: UserContent = [
       {
         type: 'text',
         text: `Consider the following screenshot of a web page${currentUrl ? ` (URL: ${currentUrl})` : ''}, with the goal being "${goal}".
+${hasResults ? '⚠️ IMPORTANT: Review previous steps and their results. If these results satisfy the original goal, return CLOSE to prevent infinite loops.' : ''}
 ${
   previousSteps.length > 0
     ? `Previous steps taken:
@@ -373,8 +424,13 @@ ${previousSteps
 Step ${index + 1}:
 - Action: ${step.text}
 - Reasoning: ${step.reasoning}
-- Tool Used: ${step.tool}
-- Instruction: ${step.instruction}
+- Method Used: ${step.method}
+- Instruction: ${step.instruction}${
+      step.result
+        ? `
+- Result: ${typeof step.result === 'string' ? (step.result.length > 100 ? step.result.substring(0, 100) + '...' : step.result) : 'Data extracted'}`
+        : ''
+    }
 `,
   )
   .join('\n')}`
@@ -384,17 +440,47 @@ Determine the immediate next step to take to achieve the goal.
 
 Important guidelines:
 1. Break down complex actions into individual atomic steps.
-2. For ACT commands, use only one action at a time.
-3. Avoid combining multiple actions in one instruction.
-4. For steps that don't require browser interaction (like analyzing extracted HTML), use "CLOSE" to finish the task.
-If the goal has been achieved, return "CLOSE".`,
+2. Choose the appropriate method based on the task:
+   - Use HTML: For getting the complete page source (SEO audits, page analysis)
+   - Use EXTRACT: For getting specific elements with a clear instruction (prices, titles, specific content)
+   - Use OBSERVE: For analyzing visible elements and their properties
+   - Use ACT: For clicking, typing, or other interactions
+   - Use WAIT: For waiting specific milliseconds
+   - Use NAVBACK: For going back to previous page
+   - Use AI_HANDLE: For tasks that can be handled by AI without browser interaction (analysis, summarization, etc.)
+   - Use CLOSE when:
+    - The goal has been achieved
+    - You have collected all necessary information
+    - No more browser interaction is needed
+3. Each method requires specific instructions:
+   - HTML: No instruction needed
+   - EXTRACT: Must specify what to extract (e.g., "extract the main heading")
+   - OBSERVE: Can provide specific instruction or leave empty for general observation
+   - ACT: Must specify one clear action (e.g., "click #submit-button")
+   - AI_HANDLE: Provide a clear instruction for the AI (e.g., "analyze this HTML for SEO issues")
+   - CLOSE: No instruction needed
+4. Best practices:
+   - Break down complex tasks into smaller, atomic steps
+     - Example of ACT method:
+      - DON'T: log in and purchase the first item
+      - DO:
+        - click the login button
+        - click on the first item
+        - click the purchase button
+
+   - Don't use broad or ambiguous instructions like "find something interesting on the page"
+   - Avoid combining actions such as "fill out the form and submit it"
+   - Avoid perform high-level planning or reasoning such as "book the cheapest flight available"
+
+   
+MOST IMPORTANT: After each step, evaluate if the goal "${goal}" has been achieved based on the results of the current and previous steps. If it has, return CLOSE with completed=true and the method will be CLOSE. This is critical to prevent infinite loops.`,
       },
     ];
 
     // Add screenshot if a GOTO step was executed previously.
     if (
       previousSteps.length > 0 &&
-      previousSteps.some((step) => step.tool === 'GOTO')
+      previousSteps.some((step) => step.method === 'GOTO')
     ) {
       const screenshot = (await this.runAtomicStep(
         stagehandInstance,
@@ -406,13 +492,13 @@ If the goal has been achieved, return "CLOSE".`,
       });
     }
 
-    if (previousExtraction) {
+    if (previousResult) {
       content.push({
         type: 'text',
-        text: `The result of the previous ${Array.isArray(previousExtraction) ? 'observation' : 'extraction'} is: ${
-          typeof previousExtraction === 'string'
-            ? previousExtraction
-            : JSON.stringify(previousExtraction)
+        text: `The result of the previous extraction is: ${
+          typeof previousResult === 'string'
+            ? previousResult
+            : JSON.stringify(previousResult)
         }`,
       });
     }
@@ -422,12 +508,13 @@ If the goal has been achieved, return "CLOSE".`,
       content,
     };
 
+    // console.log('Sending prompt:', JSON.stringify(message, null, 2));
     const result = await generateObject({
-      model: openai('gpt-4o'),
+      model: openai('gpt-4o-mini'),
       schema: z.object({
         text: z.string(),
         reasoning: z.string(),
-        tool: z.enum([
+        method: z.enum([
           'GOTO',
           'ACT',
           'EXTRACT',
@@ -437,8 +524,9 @@ If the goal has been achieved, return "CLOSE".`,
           'WAIT',
           'NAVBACK',
           'HTML',
+          'AI_HANDLE',
         ]),
-        instruction: z.string(),
+        instruction: z.string().describe('The instruction for the tool'),
       }),
       messages: [message],
     });
@@ -449,41 +537,10 @@ If the goal has been achieved, return "CLOSE".`,
     };
   }
 
-  private async selectStartingUrl(
-    goal: string,
-  ): Promise<{ url: string; reasoning: string }> {
-    const message: CoreMessage = {
-      role: 'user',
-      content: [
-        {
-          type: 'text',
-          text: `Given the goal: "${goal}", determine the best URL to start from.
-Choose from:
-1. A relevant search engine (Google, Bing, etc.)
-2. A direct URL if you're confident about the target website
-3. Any other appropriate starting point
-
-Return a URL that would be most effective for achieving this goal.`,
-        },
-      ],
-    };
-
-    const result = await generateObject({
-      model: openai('gpt-4o'),
-      schema: z.object({
-        url: z.string().url(),
-        reasoning: z.string(),
-      }),
-      messages: [message],
-    });
-
-    return result.object;
-  }
-
   // Add new helper method to process extracted data
   private async processExtractedData(
     data: any,
-    tool: 'EXTRACT' | 'OBSERVE' | 'HTML',
+    tool: 'EXTRACT' | 'HTML',
     instruction: string,
   ): Promise<ExtractedData> {
     // Convert non-serializable data to serializable format
@@ -505,7 +562,7 @@ Return a URL that would be most effective for achieving this goal.`,
 
     // For HTML content, we don't need to parse it since Stagehand/Playwright
     // already provides structured data through its extract/observe methods
-    if (tool === 'HTML' || tool === 'EXTRACT' || tool === 'OBSERVE') {
+    if (tool === 'HTML' || tool === 'EXTRACT') {
       return {
         type: tool.toLowerCase(),
         content: processableData,
@@ -589,7 +646,7 @@ Return a URL that would be most effective for achieving this goal.`,
     };
 
     const response = await generateObject({
-      model: openai('gpt-4o'),
+      model: openai('gpt-4o-mini'),
       schema: z.object({
         summary: z.string(),
       }),
@@ -597,6 +654,30 @@ Return a URL that would be most effective for achieving this goal.`,
     });
 
     return response.object.summary;
+  }
+
+  // Add a new method to process tasks with AI
+  private async processWithAI(instruction: string): Promise<string> {
+    console.log(`Processing with AI: ${instruction.substring(0, 100)}...`);
+
+    // Prepare the message for the AI
+    const message: CoreMessage = {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: `Task: ${instruction}\n\nPlease analyze and provide a detailed response.`,
+        },
+      ],
+    };
+
+    // Generate the response using generateText
+    const response = await generateText({
+      model: openai('gpt-4o-mini'),
+      messages: [message],
+    });
+
+    return response.text;
   }
 
   async cleanup() {

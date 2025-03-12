@@ -7,13 +7,13 @@ import { openai } from '@ai-sdk/openai';
 import { generateText } from 'ai';
 import { z } from 'zod';
 import { getSystemPrompt } from './system-prompt';
+import { generateObject } from 'ai';
 
 export class Agent {
   private task: string;
   private maxSteps: number = 20;
   private currentStep: number = 0;
   private tools: Record<string, any>;
-  private plan: Plan;
   private researchData: any[] = [];
   private spinner: any;
   private defaultModel: string;
@@ -22,12 +22,6 @@ export class Agent {
     this.task = options.task;
     this.maxSteps = options.maxSteps || this.maxSteps;
     this.tools = tools;
-    this.plan = {
-      task: this.task,
-      steps: [],
-      currentStepIndex: 0,
-      completed: false,
-    };
     this.spinner = ora();
     this.defaultModel = process.env.DEFAULT_LLM_MODEL || 'gpt-4o';
   }
@@ -35,23 +29,23 @@ export class Agent {
   async run(): Promise<void> {
     console.log(`Agent started for task: ${this.task}`);
 
-    // Initialize plan
-    await this.initializePlan();
-
-    // Execute each step in the plan
-    while (this.currentStep < this.maxSteps && !this.plan.completed) {
+    // Execute steps dynamically until completion or max steps reached
+    while (this.currentStep < this.maxSteps) {
       this.currentStep++;
       console.log(`\n--- Step ${this.currentStep} ---`);
 
-      const currentStep = this.plan.steps[this.plan.currentStepIndex];
-      if (!currentStep) {
-        this.plan.completed = true;
-        break;
-      }
-
       try {
-        await this.executeStep(currentStep);
-        this.plan.currentStepIndex++;
+        // Determine the next step based on previous results
+        const nextStep = await this.determineNextStep();
+
+        // Check if task is complete
+        if (nextStep.isComplete) {
+          console.log(chalk.green(`Task completed: ${nextStep.reason}`));
+          break;
+        }
+
+        // Execute the determined step
+        await this.executeStep(nextStep.step);
       } catch (error) {
         console.error(`Error executing step ${this.currentStep}:`, error);
         break;
@@ -66,21 +60,97 @@ export class Agent {
     console.log(`Agent completed after ${this.currentStep} steps.`);
   }
 
-  private async initializePlan(): Promise<void> {
-    this.spinner.start(chalk.blue('Creating execution plan...'));
+  private async determineNextStep(): Promise<{
+    step: Step;
+    isComplete: boolean;
+    reason?: string;
+  }> {
+    this.spinner.start(chalk.blue('Determining next step...'));
 
     try {
-      // Use the generatePlan function from our enhanced LLM module
-      const planSteps = await generatePlan(this.task);
-      this.plan.steps = planSteps;
+      // Get context from previous steps
+      const previousStepsContext = this.getPreviousStepsContext();
 
-      this.spinner.succeed(chalk.green('Plan created successfully'));
-      console.log(chalk.yellow('\nPlanned steps:'));
-      planSteps.forEach((step) => {
-        console.log(chalk.cyan(`${step.id}. ${step.description}`));
+      const { object } = await generateObject({
+        model: openai(this.defaultModel),
+        system: getSystemPrompt(this.task),
+        schema: z.object({
+          isComplete: z
+            .boolean()
+            .describe('Whether the overall task is complete'),
+          reason: z
+            .string()
+            .optional()
+            .describe(
+              'Reason why the task is complete or what needs to be done next',
+            ),
+          step: z
+            .object({
+              id: z.number(),
+              description: z.string(),
+              status: z
+                .enum(['pending', 'running', 'completed', 'failed'])
+                .default('pending'),
+              params: z.record(z.any()).optional(),
+            })
+            .optional(),
+        }),
+        prompt: `You are a strategic planning assistant that determines the next step in a complex task.
+
+        OVERALL TASK: "${this.task}"
+        
+        CURRENT PROGRESS:
+        ${previousStepsContext}
+        
+        AVAILABLE TOOLS:
+        - search: For web search operations
+        - browser: For web browsing, navigating pages, and extracting information
+        - fileOperations: For reading, writing, or manipulating files
+        - javascriptExecutor: For running JavaScript code
+        
+        DETERMINE THE NEXT STEP:
+        1. Analyze the current progress and the overall task
+        2. Decide if the task is complete or what needs to be done next
+        3. If the task is not complete, provide a specific, actionable next step
+        4. The step should be detailed and tailored to the specific task
+        5. Consider which tool would be most appropriate for this step
+        
+        If you determine the task is complete, set isComplete to true and explain why in the reason field.
+        If more work is needed, set isComplete to false, provide the next step details, and explain your reasoning.`,
       });
+
+      this.spinner.succeed(chalk.green('Next step determined'));
+
+      if (object.isComplete) {
+        return {
+          isComplete: true,
+          reason: object.reason,
+          step: {
+            id: this.currentStep,
+            description: 'Task completed',
+            status: 'completed',
+          },
+        };
+      } else {
+        const step: Step = {
+          id: this.currentStep,
+          description:
+            object.step?.description || 'Error: No step description provided',
+          status: 'pending',
+          params: object.step?.params || {},
+        };
+
+        console.log(chalk.yellow('\nNext step:'));
+        console.log(chalk.cyan(`${step.id}. ${step.description}`));
+
+        return {
+          isComplete: false,
+          reason: object.reason,
+          step,
+        };
+      }
     } catch (error) {
-      this.spinner.fail(chalk.red('Failed to create plan'));
+      this.spinner.fail(chalk.red('Failed to determine next step'));
       console.error(error);
       throw error;
     }
@@ -110,7 +180,10 @@ export class Agent {
         browser: {
           description: 'Browse a specific URL and extract information',
           parameters: z.object({
-            url: z.string().url().optional().describe('The URL to visit'),
+            url: z
+              .string()
+              .url()
+              .describe('The URL to visit to complete the task'),
             goal: z
               .string()
               .optional()
@@ -260,26 +333,17 @@ export class Agent {
   }
 
   private getPreviousStepsContext(): string {
-    // Only use the result from the most recent completed step
-    if (this.plan.currentStepIndex === 0 || this.researchData.length === 0) {
+    if (this.currentStep === 1) {
       return 'This is the first step, so there are no previous results.';
     }
 
-    const prevIndex = this.plan.currentStepIndex - 1;
-    const prevStep = this.plan.steps[prevIndex];
-    if (!prevStep || prevStep.status !== 'completed') {
-      return 'The previous step is not completed. No previous results available.';
-    }
+    let context = `Progress so far:\n\n`;
 
-    let context = `Result from previous step:\n\nStep ${prevIndex + 1}: ${prevStep.description}\n`;
-    const stepData = this.researchData.filter(
-      (data) => data.stepId === prevStep.id,
-    );
-    if (stepData.length > 0) {
-      context += `Results:\n${JSON.stringify(stepData, null, 2)}\n`;
-    } else {
-      context += `No specific data collected for this step.\n`;
-    }
+    // Include all previous research data with step information
+    this.researchData.forEach((data, index) => {
+      context += `Step ${data.stepId}: ${data.type} operation\n`;
+      context += `Results:\n${JSON.stringify(data.data, null, 2)}\n\n`;
+    });
 
     return context;
   }
@@ -304,7 +368,22 @@ export class Agent {
           ${JSON.stringify(this.researchData, null, 2)}
           
           COMPLETED STEPS:
-          ${JSON.stringify(this.plan.steps, null, 2)}
+          ${JSON.stringify(
+            this.researchData.map((data) => ({
+              id: data.stepId,
+              description:
+                data.type === 'search'
+                  ? data.data.query
+                  : data.type === 'browser'
+                    ? data.data.url
+                    : data.type === 'fileOperation'
+                      ? data.data.filename
+                      : data.data.code,
+              status: 'completed',
+            })),
+            null,
+            2,
+          )}
           
           Important instructions:
           1. Follow the exact structure provided in the table of contents

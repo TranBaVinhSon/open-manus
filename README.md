@@ -4,11 +4,15 @@ An experimental AI agent project inspired by Manus. This is a first attempt at b
 
 > **Note**: This project is in early experimental stages and was initially scaffolded using Cursor.
 
+## Architecture
+
+![Open Manus Architecture](/static/open-manus.png)
+
 ## Features (Planned/In Development)
 
 - Web search using exa.ai API
 - Browser automation with browserbase/stagehand
-- Deep research capabilities
+- Deep search capabilities
 - Code Interpreter using Javascript for complex calculations and data analysis
 - Computer Use capabilities (file operations, terminal commands, system interactions)
 - Report generation in both Markdown and HTML formats
@@ -46,22 +50,14 @@ An experimental AI agent project inspired by Manus. This is a first attempt at b
 
 This project is in its very early stages and is being developed as an experimental implementation. The features listed above are planned but may not all be fully implemented yet. Contributions and feedback are welcome!
 
-## Architecture
-
-![Open Manus Architecture](/static/open-manus.png)
-
 ## Some Examples
 
 ```bash
-yarn start -t "Analyze the latest news about artificial intelligence and summarize key trends"
+yarn start -t "Run a thorough SEO audit on Karpathy's website (https://karpathy.ai/) and deliver a detailed optimization report with actionable recommendations."
 ```
 
 ```bash
 yarn start -t "Visit the official YC website and compile all enterprise information under the W25 B2B tag into a clear, well-structured table. Be sure to find all of it."
-```
-
-```bash
-yarn start -t "Create a report of all JavaScript files in the current project and their dependencies"
 ```
 
 ```bash
