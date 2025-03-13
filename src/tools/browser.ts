@@ -148,7 +148,7 @@ export class BrowserTool implements Tool {
         text: `Navigating to ${providedUrl}`,
         reasoning: goal,
         method: 'GOTO',
-        instruction: 'Navigating to the URL provided in the request',
+        instruction: providedUrl,
       };
 
       // Execute first step: navigate
