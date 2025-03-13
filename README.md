@@ -1,12 +1,20 @@
 # open-manus
 
-An experimental AI agent project inspired by Manus. This is a first attempt at building a general-purpose AI agent that performs complex tasks. Built with TypeScript and powered by the Vercel AI SDK.
+An experimental AI agent project inspired by Manus. This is an attempt at building a general-purpose AI agent that performs complex tasks. Built with TypeScript and powered by the Vercel AI SDK.
 
 > **Note**: This project is in early experimental stages and was initially scaffolded using Cursor.
 
 ## Architecture
 
 ![Open Manus Architecture](/static/open-manus.png)
+
+## Demo
+
+<video width="600" controls>
+  <source src="/static/demo.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+<p>"Visit the official YC website and compile all enterprise information from F24 and B2B tag into a clear, well-structured table. Be sure to find all of it."</p>
 
 ## Features (Planned/In Development)
 
