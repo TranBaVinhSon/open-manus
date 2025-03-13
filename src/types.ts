@@ -55,6 +55,7 @@ export interface SearchResults {
   results: SearchResultItem[];
   numberOfResults?: number;
   query: string;
+  metadata?: Record<string, any>;
 }
 
 // File Operation Types

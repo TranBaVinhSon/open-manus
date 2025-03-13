@@ -8,6 +8,20 @@ import { generateText } from 'ai';
 import { z } from 'zod';
 import { getSystemPrompt } from './system-prompt';
 import { generateObject } from 'ai';
+import path from 'path';
+import {
+  createTaskFolder,
+  createTodoMd,
+  updateSubtaskStatus,
+  addSubtask,
+  addReasoningToTodo,
+} from '../tools/file';
+
+interface SubTask {
+  id: number;
+  description: string;
+  status: 'pending' | 'completed';
+}
 
 export class Agent {
   private task: string;
@@ -17,6 +31,10 @@ export class Agent {
   private researchData: any[] = [];
   private spinner: any;
   private defaultModel: string;
+  private taskTimestamp: number;
+  private taskFolderPath: string = '';
+  private todoMdPath: string = '';
+  private subtasks: SubTask[] = [];
 
   constructor(options: AgentOptions) {
     this.task = options.task;
@@ -24,10 +42,14 @@ export class Agent {
     this.tools = tools;
     this.spinner = ora();
     this.defaultModel = process.env.DEFAULT_LLM_MODEL || 'gpt-4o';
+    this.taskTimestamp = Date.now();
   }
 
   async run(): Promise<void> {
     console.log(`Agent started for task: ${this.task}`);
+
+    // Initialize task environment
+    await this.initializeTaskEnvironment();
 
     // Execute steps dynamically until completion or max steps reached
     while (this.currentStep < this.maxSteps) {
@@ -41,11 +63,30 @@ export class Agent {
         // Check if task is complete
         if (nextStep.isComplete) {
           console.log(chalk.green(`Task completed: ${nextStep.reason}`));
+          // Update todo.md with completion status
+          await addReasoningToTodo(
+            this.todoMdPath,
+            `Task completed: ${nextStep.reason}`,
+          );
           break;
         }
 
         // Execute the determined step
         await this.executeStep(nextStep.step);
+
+        // Update subtask status in todo.md
+        if (nextStep.step.subtaskId) {
+          await updateSubtaskStatus(
+            this.todoMdPath,
+            nextStep.step.subtaskId,
+            'completed',
+          );
+        }
+
+        // Add reasoning about what to do next
+        if (nextStep.reason) {
+          await addReasoningToTodo(this.todoMdPath, nextStep.reason);
+        }
       } catch (error) {
         console.error(`Error executing step ${this.currentStep}:`, error);
         break;
@@ -60,15 +101,92 @@ export class Agent {
     console.log(`Agent completed after ${this.currentStep} steps.`);
   }
 
+  private async initializeTaskEnvironment(): Promise<void> {
+    this.spinner.start(chalk.blue('Initializing task environment...'));
+
+    try {
+      // Create task folder
+      this.taskFolderPath = await createTaskFolder(this.taskTimestamp);
+
+      // Plan the task and create subtasks
+      const plan = await this.createTaskPlan();
+
+      // Create todo.md with the planned subtasks
+      const todoResult = await createTodoMd(
+        this.taskFolderPath,
+        this.task,
+        plan.subtasks.map((st) => ({
+          description: st.description,
+          status: 'pending',
+        })),
+      );
+
+      if (todoResult.success) {
+        this.todoMdPath = todoResult.data as string;
+        this.subtasks = plan.subtasks;
+      } else {
+        throw new Error(`Failed to create todo.md: ${todoResult.message}`);
+      }
+
+      this.spinner.succeed(chalk.green('Task environment initialized'));
+      console.log(chalk.yellow(`Task folder: ${this.taskFolderPath}`));
+      console.log(chalk.yellow(`Todo file: ${this.todoMdPath}`));
+    } catch (error) {
+      this.spinner.fail(chalk.red('Failed to initialize task environment'));
+      console.error(error);
+      throw error;
+    }
+  }
+
+  private async createTaskPlan(): Promise<{ subtasks: SubTask[] }> {
+    this.spinner.start(chalk.blue('Creating task plan...'));
+
+    try {
+      // Use LLM to create a plan with subtasks
+      const { object } = await generateObject({
+        model: openai(this.defaultModel),
+        system: `You are a strategic planning assistant that breaks down complex tasks into smaller, manageable subtasks. Be specific and detailed.`,
+        schema: z.object({
+          subtasks: z.array(
+            z.object({
+              id: z.number(),
+              description: z.string(),
+              status: z.enum(['pending', 'completed']).default('pending'),
+            }),
+          ),
+        }),
+        prompt: `Break down the following task into 5-10 clear subtasks: "${this.task}"
+        
+        For each subtask:
+        1. Make it specific and actionable
+        2. Ensure it contributes to the overall task
+        3. Order subtasks logically (earlier tasks should support later ones)
+        4. Assign an ID number to each subtask
+        
+        Provide your response as a structured list of subtasks.`,
+      });
+
+      this.spinner.succeed(chalk.green('Task plan created'));
+
+      return {
+        subtasks: object.subtasks,
+      };
+    } catch (error) {
+      this.spinner.fail(chalk.red('Failed to create task plan'));
+      console.error(error);
+      throw error;
+    }
+  }
+
   private async determineNextStep(): Promise<{
-    step: Step;
+    step: Step & { subtaskId?: number };
     isComplete: boolean;
     reason?: string;
   }> {
     this.spinner.start(chalk.blue('Determining next step...'));
 
     try {
-      // Get context from previous steps
+      // Get context from previous steps and todo.md
       const previousStepsContext = this.getPreviousStepsContext();
 
       const { object } = await generateObject({
@@ -92,6 +210,7 @@ export class Agent {
                 .enum(['pending', 'running', 'completed', 'failed'])
                 .default('pending'),
               params: z.record(z.any()).optional(),
+              subtaskId: z.number().optional(),
             })
             .optional(),
         }),
@@ -102,6 +221,9 @@ export class Agent {
         CURRENT PROGRESS:
         ${previousStepsContext}
         
+        SUBTASKS:
+        ${this.subtasks.map((st) => `${st.id}. [${st.status === 'completed' ? 'x' : ' '}] ${st.description}`).join('\n')}
+        
         AVAILABLE TOOLS:
         - search: For web search operations
         - browser: For web browsing, navigating pages, and extracting information
@@ -111,12 +233,13 @@ export class Agent {
         DETERMINE THE NEXT STEP:
         1. Analyze the current progress and the overall task
         2. Decide if the task is complete or what needs to be done next
-        3. If the task is not complete, provide a specific, actionable next step
-        4. The step should be detailed and tailored to the specific task
+        3. If the task is not complete, select the next appropriate subtask from the list
+        4. Provide a specific, actionable next step to complete that subtask
         5. Consider which tool would be most appropriate for this step
         
         If you determine the task is complete, set isComplete to true and explain why in the reason field.
-        If more work is needed, set isComplete to false, provide the next step details, and explain your reasoning.`,
+        If more work is needed, set isComplete to false, provide the next step details, and explain your reasoning.
+        Include the subtaskId for the subtask this step contributes to completing.`,
       });
 
       this.spinner.succeed(chalk.green('Next step determined'));
@@ -132,16 +255,29 @@ export class Agent {
           },
         };
       } else {
-        const step: Step = {
+        const step: Step & { subtaskId?: number } = {
           id: this.currentStep,
           description:
             object.step?.description || 'Error: No step description provided',
           status: 'pending',
           params: object.step?.params || {},
+          subtaskId: object.step?.subtaskId,
         };
 
         console.log(chalk.yellow('\nNext step:'));
         console.log(chalk.cyan(`${step.id}. ${step.description}`));
+
+        // If this step completes a subtask, note which one
+        if (step.subtaskId) {
+          const subtask = this.subtasks.find((st) => st.id === step.subtaskId);
+          if (subtask) {
+            console.log(
+              chalk.gray(
+                `Contributing to subtask ${step.subtaskId}: ${subtask.description}`,
+              ),
+            );
+          }
+        }
 
         return {
           isComplete: false,
@@ -156,7 +292,9 @@ export class Agent {
     }
   }
 
-  private async executeStep(step: Step): Promise<void> {
+  private async executeStep(
+    step: Step & { subtaskId?: number },
+  ): Promise<void> {
     console.log(`Executing: ${step.description}`);
     step.status = 'running';
 
@@ -226,25 +364,76 @@ export class Agent {
           },
         },
 
-        // TOOD: Adding tool to access terminal. It's too dangerous to let AI access terminal without any guardrail implementation
-        // terminal: {
-        //   description: 'Execute shell commands in the system terminal',
-        //   parameters: z.object({
-        //     command: z.string().describe('Shell command to execute'),
-        //     workingDir: z
-        //       .string()
-        //       .optional()
-        //       .describe('Working directory for command execution'),
-        //     timeout: z.number().optional().describe('Timeout in milliseconds'),
-        //   }),
-        //   execute: async (params: {
-        //     command: string;
-        //     workingDir?: string;
-        //     timeout?: number;
-        //   }) => {
-        //     return await this.tools.terminal.execute(params);
-        //   },
-        // },
+        terminal: {
+          description:
+            'Execute shell commands in the system terminal with safety restrictions',
+          parameters: z.object({
+            command: z.string().describe('Shell command to execute'),
+            workingDir: z
+              .string()
+              .optional()
+              .describe('Working directory for command execution'),
+            timeout: z.number().optional().describe('Timeout in milliseconds'),
+          }),
+          execute: async (params: {
+            command: string;
+            workingDir?: string;
+            timeout?: number;
+          }) => {
+            // Safety checks
+            const commandStr = params.command.toLowerCase();
+            const dangerousCommands = [
+              'rm -rf',
+              'mkfs',
+              'dd',
+              ':(){',
+              'chmod -R',
+              '> /dev/',
+              '| passwd',
+            ];
+
+            if (dangerousCommands.some((cmd) => commandStr.includes(cmd))) {
+              return {
+                success: false,
+                output: '',
+                error: 'Potentially dangerous command blocked for safety',
+                exitCode: -1,
+              };
+            }
+
+            // Ensure working directory is confined to the task folder or safe locations
+            const workingDir = params.workingDir || this.taskFolderPath;
+            const absoluteWorkingDir = path.resolve(workingDir);
+
+            // Check if the working directory is within safe boundaries
+            if (
+              !absoluteWorkingDir.startsWith(process.cwd()) &&
+              !absoluteWorkingDir.startsWith('/tmp/') &&
+              !absoluteWorkingDir.startsWith(path.resolve(this.taskFolderPath))
+            ) {
+              return {
+                success: false,
+                output: '',
+                error: `Working directory not allowed: ${absoluteWorkingDir}`,
+                exitCode: -1,
+              };
+            }
+
+            try {
+              return await this.tools.terminal.execute({
+                ...params,
+                workingDir: absoluteWorkingDir,
+              });
+            } catch (error: any) {
+              return {
+                success: false,
+                output: '',
+                error: `Terminal execution error: ${error.message}`,
+                exitCode: -1,
+              };
+            }
+          },
+        },
 
         javascriptExecutor: {
           description: 'Execute JavaScript code',
@@ -255,6 +444,156 @@ export class Agent {
             return await this.tools.javascriptExecutor.execute({ code });
           },
         },
+
+        taskFileOperations: {
+          description: 'Perform file operations within the task folder',
+          parameters: z.object({
+            operation: z.enum(['read', 'write', 'append']),
+            filename: z.string().describe('Filename within the task folder'),
+            content: z
+              .string()
+              .optional()
+              .describe('Content to write (for write or append operation)'),
+          }),
+          execute: async ({
+            operation,
+            filename,
+            content,
+          }: {
+            operation: 'read' | 'write' | 'append';
+            filename: string;
+            content?: string;
+          }) => {
+            // Ensure the file path is within the task folder
+            const filePath = path.join(this.taskFolderPath, filename);
+
+            try {
+              if (operation === 'write' && content) {
+                return await this.tools.fileOperations.writeFile(
+                  filePath,
+                  content,
+                );
+              } else if (operation === 'read') {
+                return await this.tools.fileOperations.readFile(filePath);
+              } else if (operation === 'append' && content) {
+                // First read the file content
+                const existingContent = await this.tools.fileOperations
+                  .readFile(filePath)
+                  .catch(() => ''); // Empty string if file doesn't exist
+
+                // Then write back with appended content
+                return await this.tools.fileOperations.writeFile(
+                  filePath,
+                  existingContent + content,
+                );
+              }
+              return { success: false, message: 'Invalid operation' };
+            } catch (error: any) {
+              return {
+                success: false,
+                message: `File operation error: ${error.message}`,
+              };
+            }
+          },
+        },
+
+        todoOperations: {
+          description: 'Perform operations on the todo.md file',
+          parameters: z.object({
+            operation: z.enum(['updateSubtask', 'addSubtask', 'addReasoning']),
+            subtaskId: z
+              .number()
+              .optional()
+              .describe('ID of the subtask to update'),
+            status: z
+              .enum(['pending', 'completed'])
+              .optional()
+              .describe('New status for the subtask'),
+            description: z
+              .string()
+              .optional()
+              .describe('Description for a new subtask'),
+            reasoning: z.string().optional().describe('Reasoning text to add'),
+          }),
+          execute: async (params: {
+            operation: 'updateSubtask' | 'addSubtask' | 'addReasoning';
+            subtaskId?: number;
+            status?: 'pending' | 'completed';
+            description?: string;
+            reasoning?: string;
+          }) => {
+            try {
+              switch (params.operation) {
+                case 'updateSubtask':
+                  if (params.subtaskId !== undefined && params.status) {
+                    const result = await updateSubtaskStatus(
+                      this.todoMdPath,
+                      params.subtaskId,
+                      params.status,
+                    );
+
+                    if (result.success && params.status === 'completed') {
+                      // Update our internal tracking
+                      const subtask = this.subtasks.find(
+                        (st) => st.id === params.subtaskId,
+                      );
+                      if (subtask) {
+                        subtask.status = 'completed';
+                      }
+                    }
+
+                    return result;
+                  }
+                  return {
+                    success: false,
+                    message: 'Missing subtaskId or status',
+                  };
+
+                case 'addSubtask':
+                  if (params.description) {
+                    const result = await addSubtask(
+                      this.todoMdPath,
+                      params.description,
+                    );
+
+                    if (result.success) {
+                      // Add to our internal tracking
+                      const newSubtaskData = result.data as {
+                        subtaskIndex: number;
+                        description: string;
+                      };
+                      const newSubtask: SubTask = {
+                        id: newSubtaskData.subtaskIndex,
+                        description: newSubtaskData.description,
+                        status: 'pending',
+                      };
+                      this.subtasks.push(newSubtask);
+                    }
+
+                    return result;
+                  }
+                  return { success: false, message: 'Missing description' };
+
+                case 'addReasoning':
+                  if (params.reasoning) {
+                    return await addReasoningToTodo(
+                      this.todoMdPath,
+                      params.reasoning,
+                    );
+                  }
+                  return { success: false, message: 'Missing reasoning text' };
+
+                default:
+                  return { success: false, message: 'Invalid operation' };
+              }
+            } catch (error: any) {
+              return {
+                success: false,
+                message: `Todo operation error: ${error.message}`,
+              };
+            }
+          },
+        },
       };
 
       // Use LLM to determine which tool to use and how to use it
@@ -263,7 +602,7 @@ export class Agent {
         tools: aiTools,
         prompt:
           getSystemPrompt(this.task) +
-          `\n\nCurrent step: ${step.description}\nStep parameters: ${JSON.stringify(step.params || {})}\n\nPrevious steps results: ${previousStepsContext}\n\nUse the appropriate tool to complete this step. Be precise and thorough.`,
+          `\n\nCurrent step: ${step.description}\nStep parameters: ${JSON.stringify(step.params || {})}\n\nPrevious steps results: ${previousStepsContext}\n\nTask folder path: ${this.taskFolderPath}\nTodo.md path: ${this.todoMdPath}\n\nUse the appropriate tool to complete this step. Be precise and thorough.`,
         maxSteps: 1,
       });
 
@@ -278,43 +617,21 @@ export class Agent {
             : undefined;
 
           if (toolResult) {
-            switch (toolCall.toolName) {
-              case 'search':
-                this.researchData.push({
-                  type: 'search',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
-              case 'browser':
-                this.researchData.push({
-                  type: 'browser',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
-              case 'fileOperations':
-                this.researchData.push({
-                  type: 'fileOperation',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
-              // case 'terminal':
-              //   this.researchData.push({
-              //     type: 'terminal',
-              //     stepId: step.id,
-              //     data: toolResult,
-              //   });
-              //   break;
-              case 'javascriptExecutor':
-                this.researchData.push({
-                  type: 'javascriptExecution',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
-            }
+            const researchEntry = {
+              type: toolCall.toolName,
+              stepId: step.id,
+              subtaskId: step.subtaskId,
+              data: toolResult,
+              timestamp: new Date().toISOString(),
+            };
+
+            this.researchData.push(researchEntry);
+
+            // Store result in task folder too
+            await this.tools.fileOperations.writeFile(
+              path.join(this.taskFolderPath, `step-${step.id}-result.json`),
+              JSON.stringify(researchEntry, null, 2),
+            );
           }
         }
       }
@@ -322,8 +639,24 @@ export class Agent {
       step.status = 'completed';
 
       console.log(chalk.green(`Completed step: ${step.description}`));
-      console.log(chalk.dim('Research data updated:'));
-      console.log(JSON.stringify(this.researchData, null, 2));
+
+      // Update subtask status if this step completed a subtask
+      if (step.subtaskId) {
+        const subtask = this.subtasks.find((st) => st.id === step.subtaskId);
+        if (subtask) {
+          subtask.status = 'completed';
+          await updateSubtaskStatus(
+            this.todoMdPath,
+            step.subtaskId,
+            'completed',
+          );
+          console.log(
+            chalk.green(
+              `Completed subtask ${step.subtaskId}: ${subtask.description}`,
+            ),
+          );
+        }
+      }
     } catch (error) {
       step.status = 'failed';
       step.error = (error as Error).message;
@@ -341,7 +674,16 @@ export class Agent {
 
     // Include all previous research data with step information
     this.researchData.forEach((data, index) => {
-      context += `Step ${data.stepId}: ${data.type} operation\n`;
+      context += `Step ${data.stepId}`;
+
+      if (data.subtaskId) {
+        const subtask = this.subtasks.find((st) => st.id === data.subtaskId);
+        if (subtask) {
+          context += ` (Subtask ${data.subtaskId}: ${subtask.description})`;
+        }
+      }
+
+      context += `: ${data.type} operation\n`;
       context += `Results:\n${JSON.stringify(data.data, null, 2)}\n\n`;
     });
 
@@ -380,10 +722,14 @@ export class Agent {
                       ? data.data.filename
                       : data.data.code,
               status: 'completed',
+              subtaskId: data.subtaskId,
             })),
             null,
             2,
           )}
+          
+          SUBTASKS:
+          ${JSON.stringify(this.subtasks, null, 2)}
           
           Important instructions:
           1. Follow the exact structure provided in the table of contents
@@ -401,8 +747,7 @@ export class Agent {
       const reportContent = await getChatCompletion(reportPrompt);
 
       // Save as markdown
-      const timestamp = Date.now();
-      const markdownFilename = `results/report-${timestamp}.md`;
+      const markdownFilename = path.join(this.taskFolderPath, `report.md`);
       await this.tools.fileOperations.writeFile(
         markdownFilename,
         reportContent,
@@ -442,7 +787,7 @@ export class Agent {
 
       const htmlContent = await getChatCompletion(htmlPrompt);
 
-      const htmlFilename = `results/report-${timestamp}.html`;
+      const htmlFilename = path.join(this.taskFolderPath, `report.html`);
       await this.tools.fileOperations.writeFile(htmlFilename, htmlContent);
 
       this.spinner.succeed(chalk.green('HTML report generated'));

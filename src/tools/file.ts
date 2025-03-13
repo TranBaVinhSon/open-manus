@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import * as stdFs from 'fs';
 import path from 'path';
 import { FileOperationResult, Tool } from '../types';
 import crypto from 'crypto';
@@ -266,4 +267,265 @@ export const fileOperationsTool: Tool & {
   getTaskFinalOutputPath(taskFolder: string, extension: 'md' | 'html'): string {
     return path.join(taskFolder, `final-result.${extension}`);
   },
+};
+
+/**
+ * Creates a task folder with the given timestamp
+ * @param timestamp Task timestamp
+ * @returns Path to the created task folder
+ */
+export const createTaskFolder = async (timestamp: number): Promise<string> => {
+  const taskFolderPath = `tasks/task-${timestamp}`;
+
+  try {
+    // Create tasks directory if it doesn't exist
+    if (!stdFs.existsSync('tasks')) {
+      await fs.mkdir('tasks', { recursive: true });
+    }
+
+    // Create the task folder
+    if (!stdFs.existsSync(taskFolderPath)) {
+      await fs.mkdir(taskFolderPath, { recursive: true });
+    }
+
+    return taskFolderPath;
+  } catch (error: any) {
+    console.error('Error creating task folder:', error);
+    throw new Error(`Failed to create task folder: ${error.message}`);
+  }
+};
+
+/**
+ * Creates a todo.md file in the task folder
+ * @param taskFolderPath Path to the task folder
+ * @param task Main task description
+ * @param subtasks List of subtasks
+ * @returns FileOperationResult
+ */
+export const createTodoMd = async (
+  taskFolderPath: string,
+  task: string,
+  subtasks: { description: string; status: 'pending' | 'completed' }[],
+): Promise<FileOperationResult> => {
+  const todoMdPath = `${taskFolderPath}/todo.md`;
+
+  try {
+    let content = `# Task: ${task}\n\nCreated: ${new Date().toISOString()}\n\n## Subtasks\n\n`;
+
+    subtasks.forEach((subtask, index) => {
+      const statusMark = subtask.status === 'completed' ? '[x]' : '[ ]';
+      content += `${index + 1}. ${statusMark} ${subtask.description}\n`;
+    });
+
+    await fs.writeFile(todoMdPath, content, 'utf8');
+
+    return {
+      success: true,
+      message: `Todo.md created successfully at ${todoMdPath}`,
+      data: todoMdPath,
+    };
+  } catch (error: any) {
+    console.error('Error creating todo.md:', error);
+    return {
+      success: false,
+      message: `Failed to create todo.md: ${error.message}`,
+    };
+  }
+};
+
+/**
+ * Updates a subtask status in todo.md
+ * @param todoMdPath Path to the todo.md file
+ * @param subtaskIndex Index of the subtask (1-based)
+ * @param status New status ('pending' or 'completed')
+ * @param note Optional note to add to the subtask
+ * @returns FileOperationResult
+ */
+export const updateSubtaskStatus = async (
+  todoMdPath: string,
+  subtaskIndex: number,
+  status: 'pending' | 'completed',
+  note?: string,
+): Promise<FileOperationResult> => {
+  try {
+    let exists = false;
+    try {
+      await fs.access(todoMdPath);
+      exists = true;
+    } catch (accessError) {
+      exists = false;
+    }
+
+    if (!exists) {
+      return {
+        success: false,
+        message: `Todo.md not found at ${todoMdPath}`,
+      };
+    }
+
+    const content = await fs.readFile(todoMdPath, 'utf8');
+    const lines = content.split('\n');
+
+    // Find the subtask line
+    const subtaskRegex = new RegExp(`^${subtaskIndex}\\. \\[([ x])\\] (.+)$`);
+
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].match(subtaskRegex);
+      if (match) {
+        // Replace the status mark
+        const statusMark = status === 'completed' ? '[x]' : '[ ]';
+        let newLine = `${subtaskIndex}. ${statusMark} ${match[2]}`;
+
+        // Add note if provided
+        if (note) {
+          newLine += ` - *${note}*`;
+        }
+
+        lines[i] = newLine;
+        break;
+      }
+    }
+
+    // Write the updated content
+    await fs.writeFile(todoMdPath, lines.join('\n'), 'utf8');
+
+    return {
+      success: true,
+      message: `Subtask ${subtaskIndex} status updated to ${status}`,
+      data: todoMdPath,
+    };
+  } catch (error: any) {
+    console.error('Error updating subtask status:', error);
+    return {
+      success: false,
+      message: `Failed to update subtask status: ${error.message}`,
+    };
+  }
+};
+
+/**
+ * Adds a new subtask to todo.md
+ * @param todoMdPath Path to the todo.md file
+ * @param description Description of the new subtask
+ * @returns FileOperationResult
+ */
+export const addSubtask = async (
+  todoMdPath: string,
+  description: string,
+): Promise<FileOperationResult> => {
+  try {
+    if (!stdFs.existsSync(todoMdPath)) {
+      return {
+        success: false,
+        message: `Todo.md not found at ${todoMdPath}`,
+      };
+    }
+
+    const content = await fs.readFile(todoMdPath, 'utf8');
+    const lines = content.split('\n');
+
+    // Find the subtasks section and count existing subtasks
+    let subtasksIndex = -1;
+    let subtaskCount = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('## Subtasks')) {
+        subtasksIndex = i;
+      } else if (subtasksIndex !== -1 && lines[i].match(/^\d+\. \[[ x]\] /)) {
+        subtaskCount++;
+      }
+    }
+
+    if (subtasksIndex === -1) {
+      return {
+        success: false,
+        message: 'Subtasks section not found in todo.md',
+      };
+    }
+
+    // Add the new subtask
+    const newSubtaskLine = `${subtaskCount + 1}. [ ] ${description}`;
+    lines.splice(subtasksIndex + subtaskCount + 1, 0, newSubtaskLine);
+
+    // Write the updated content
+    await fs.writeFile(todoMdPath, lines.join('\n'), 'utf8');
+
+    return {
+      success: true,
+      message: `New subtask added: ${description}`,
+      data: {
+        subtaskIndex: subtaskCount + 1,
+        description,
+      },
+    };
+  } catch (error: any) {
+    console.error('Error adding subtask:', error);
+    return {
+      success: false,
+      message: `Failed to add subtask: ${error.message}`,
+    };
+  }
+};
+
+/**
+ * Adds a reasoning note to todo.md
+ * @param todoMdPath Path to the todo.md file
+ * @param reasoning Reasoning text
+ * @returns FileOperationResult
+ */
+export const addReasoningToTodo = async (
+  todoMdPath: string,
+  reasoning: string,
+): Promise<FileOperationResult> => {
+  try {
+    if (!stdFs.existsSync(todoMdPath)) {
+      return {
+        success: false,
+        message: `Todo.md not found at ${todoMdPath}`,
+      };
+    }
+
+    const content = await fs.readFile(todoMdPath, 'utf8');
+
+    // Check if there's already a reasoning section
+    if (content.includes('## Reasoning')) {
+      // Update existing reasoning section
+      const reasoningRegex = /## Reasoning\n\n([\s\S]*?)(?=\n##|$)/;
+      const match = content.match(reasoningRegex);
+
+      if (match) {
+        // Add new reasoning to existing content
+        const updatedReasoning = `${match[1].trim()}\n\n${new Date().toISOString()}: ${reasoning}`;
+        const updatedContent = content.replace(
+          reasoningRegex,
+          `## Reasoning\n\n${updatedReasoning}\n\n`,
+        );
+        await fs.writeFile(todoMdPath, updatedContent, 'utf8');
+      } else {
+        // Something is wrong, add a new section
+        const updatedContent =
+          content +
+          `\n\n## Reasoning\n\n${new Date().toISOString()}: ${reasoning}\n`;
+        await fs.writeFile(todoMdPath, updatedContent, 'utf8');
+      }
+    } else {
+      // Add a new reasoning section
+      const updatedContent =
+        content +
+        `\n\n## Reasoning\n\n${new Date().toISOString()}: ${reasoning}\n`;
+      await fs.writeFile(todoMdPath, updatedContent, 'utf8');
+    }
+
+    return {
+      success: true,
+      message: 'Reasoning added to todo.md',
+      data: todoMdPath,
+    };
+  } catch (error: any) {
+    console.error('Error adding reasoning to todo.md:', error);
+    return {
+      success: false,
+      message: `Failed to add reasoning: ${error.message}`,
+    };
+  }
 };
