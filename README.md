@@ -14,7 +14,8 @@ An experimental AI agent project inspired by Manus. This is an attempt at buildi
   <source src="/static/demo.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
-<p>"Visit the official YC website and compile all enterprise information from F24 and B2B tag into a clear, well-structured table. Be sure to find all of it."</p>
+
+<p>Example: "Visit the official YC website and compile all enterprise information from F24 and B2B tag into a clear, well-structured table. Be sure to find all of it."</p>
 
 ## Features (Planned/In Development)
 
