@@ -8,15 +8,23 @@ import { generateText } from 'ai';
 import { z } from 'zod';
 import { getSystemPrompt } from './system-prompt';
 import { generateObject } from 'ai';
+import { MemoryStore } from './memory-store';
+import { ReportGenerator } from './report-generator';
 
+/**
+ * Interface for data entries stored in memory
+ */
 export class Agent {
   private task: string;
   private maxSteps: number = 20;
   private currentStep: number = 0;
   private tools: Record<string, any>;
-  private researchData: any[] = [];
+  private memory: MemoryStore = new MemoryStore();
   private spinner: any;
   private defaultModel: string;
+  private cachedSystemPrompt: string | null = null; // Cache system prompt
+  private startTime: number = 0; // Track execution start time
+  private stepTimes: Record<number, { start: number; end: number }> = {}; // Track individual step times
 
   constructor(options: AgentOptions) {
     this.task = options.task;
@@ -27,7 +35,13 @@ export class Agent {
   }
 
   async run(): Promise<void> {
+    // Record start time
+    this.startTime = Date.now();
     console.log(`Agent started for task: ${this.task}`);
+    console.log(`Start time: ${new Date(this.startTime).toISOString()}`);
+
+    // Pre-cache the system prompt to avoid repeated function calls
+    this.cachedSystemPrompt = getSystemPrompt(this.task);
 
     // Execute steps dynamically until completion or max steps reached
     while (this.currentStep < this.maxSteps) {
@@ -53,7 +67,7 @@ export class Agent {
     }
 
     // Generate final report
-    if (this.researchData.length > 0) {
+    if (this.memory.length > 0) {
       await this.generateReport();
     }
 
@@ -65,15 +79,21 @@ export class Agent {
     isComplete: boolean;
     reason?: string;
   }> {
+    // Record step start time
+    this.stepTimes[this.currentStep] = {
+      start: Date.now(),
+      end: 0,
+    };
+
     this.spinner.start(chalk.blue('Determining next step...'));
 
     try {
       // Get context from previous steps
-      const previousStepsContext = this.getPreviousStepsContext();
+      const previousStepsContext = this.memory.getFormattedContext();
 
       const { object } = await generateObject({
         model: openai(this.defaultModel),
-        system: getSystemPrompt(this.task),
+        system: this.cachedSystemPrompt!,
         schema: z.object({
           isComplete: z
             .boolean()
@@ -162,7 +182,7 @@ export class Agent {
 
     try {
       // Format previous steps results to provide as context
-      const previousStepsContext = this.getPreviousStepsContext();
+      const previousStepsContext = this.memory.getFormattedContext();
 
       // Create tools config for Vercel AI SDK
       const aiTools = {
@@ -262,7 +282,7 @@ export class Agent {
         model: openai(this.defaultModel),
         tools: aiTools,
         prompt:
-          getSystemPrompt(this.task) +
+          this.cachedSystemPrompt! +
           `\n\nCurrent step: ${step.description}\nStep parameters: ${JSON.stringify(step.params || {})}\n\nPrevious steps results: ${previousStepsContext}\n\nUse the appropriate tool to complete this step. Be precise and thorough.`,
         maxSteps: 1,
       });
@@ -278,52 +298,36 @@ export class Agent {
             : undefined;
 
           if (toolResult) {
-            switch (toolCall.toolName) {
-              case 'search':
-                this.researchData.push({
-                  type: 'search',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
-              case 'browser':
-                this.researchData.push({
-                  type: 'browser',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
-              case 'fileOperations':
-                this.researchData.push({
-                  type: 'fileOperation',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
-              // case 'terminal':
-              //   this.researchData.push({
-              //     type: 'terminal',
-              //     stepId: step.id,
-              //     data: toolResult,
-              //   });
-              //   break;
-              case 'javascriptExecutor':
-                this.researchData.push({
-                  type: 'javascriptExecution',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
-            }
+            const type =
+              toolCall.toolName === 'fileOperations'
+                ? 'fileOperation'
+                : toolCall.toolName === 'javascriptExecutor'
+                  ? 'javascriptExecution'
+                  : toolCall.toolName;
+
+            // Store the result in our enhanced memory structure
+            this.memory.addResult(step.id, type, toolResult);
           }
         }
       }
 
       step.status = 'completed';
 
+      // Record step end time
+      if (this.stepTimes[step.id]) {
+        this.stepTimes[step.id].end = Date.now();
+        const stepDuration =
+          (this.stepTimes[step.id].end - this.stepTimes[step.id].start) / 1000;
+        console.log(
+          chalk.dim(`Step duration: ${stepDuration.toFixed(2)} seconds`),
+        );
+      }
+
       console.log(chalk.green(`Completed step: ${step.description}`));
       console.log(chalk.dim('Research data updated:'));
-      console.log(JSON.stringify(this.researchData, null, 2));
+      // Only show the most recent data for better readability
+      const recentData = this.memory.getResultsByStepId(step.id);
+      console.log(JSON.stringify(recentData, null, 2));
     } catch (error) {
       step.status = 'failed';
       step.error = (error as Error).message;
@@ -332,26 +336,14 @@ export class Agent {
     }
   }
 
-  private getPreviousStepsContext(): string {
-    if (this.currentStep === 1) {
-      return 'This is the first step, so there are no previous results.';
-    }
-
-    let context = `Progress so far:\n\n`;
-
-    // Include all previous research data with step information
-    this.researchData.forEach((data, index) => {
-      context += `Step ${data.stepId}: ${data.type} operation\n`;
-      context += `Results:\n${JSON.stringify(data.data, null, 2)}\n\n`;
-    });
-
-    return context;
-  }
-
   private async generateReport(): Promise<void> {
     this.spinner.start(chalk.blue('Generating final report...'));
+    const reportStartTime = Date.now();
 
     try {
+      // Get all data in a format suitable for report generation
+      const allData = this.memory.getAllData();
+
       const reportPrompt = [
         {
           role: 'system',
@@ -365,20 +357,20 @@ export class Agent {
           TASK: ${this.task}
           
           RESEARCH DATA:
-          ${JSON.stringify(this.researchData, null, 2)}
+          ${JSON.stringify(allData, null, 2)}
           
           COMPLETED STEPS:
           ${JSON.stringify(
-            this.researchData.map((data) => ({
-              id: data.stepId,
+            allData.map((entry) => ({
+              id: entry.stepId,
               description:
-                data.type === 'search'
-                  ? data.data.query
-                  : data.type === 'browser'
-                    ? data.data.url
-                    : data.type === 'fileOperation'
-                      ? data.data.filename
-                      : data.data.code,
+                entry.type === 'search'
+                  ? entry.data.query
+                  : entry.type === 'browser'
+                    ? entry.data.url
+                    : entry.type === 'fileOperation'
+                      ? entry.data.filename
+                      : entry.data.code,
               status: 'completed',
             })),
             null,
@@ -447,6 +439,93 @@ export class Agent {
 
       this.spinner.succeed(chalk.green('HTML report generated'));
 
+      // Calculate and display timing information
+      const endTime = Date.now();
+      const totalDuration = (endTime - this.startTime) / 1000; // in seconds
+      const reportDuration = (endTime - reportStartTime) / 1000; // in seconds
+
+      // Calculate step statistics
+      const stepDurations = Object.entries(this.stepTimes)
+        .filter(([_, times]) => times.end > 0)
+        .map(([stepId, times]) => ({
+          stepId: parseInt(stepId),
+          duration: (times.end - times.start) / 1000,
+        }));
+
+      const averageStepDuration =
+        stepDurations.length > 0
+          ? stepDurations.reduce((sum, step) => sum + step.duration, 0) /
+            stepDurations.length
+          : 0;
+
+      const longestStep =
+        stepDurations.length > 0
+          ? stepDurations.reduce(
+              (longest, step) =>
+                step.duration > longest.duration ? step : longest,
+              stepDurations[0],
+            )
+          : null;
+
+      // Generate timing report
+      console.log(chalk.green('\n========================================'));
+      console.log(chalk.yellow('EXECUTION TIME STATISTICS:'));
+      console.log(chalk.green('========================================'));
+      console.log(
+        chalk.cyan(
+          `Total execution time: ${totalDuration.toFixed(2)} seconds (${(totalDuration / 60).toFixed(2)} minutes)`,
+        ),
+      );
+      console.log(
+        chalk.cyan(
+          `Report generation time: ${reportDuration.toFixed(2)} seconds`,
+        ),
+      );
+      console.log(
+        chalk.cyan(
+          `Average step duration: ${averageStepDuration.toFixed(2)} seconds`,
+        ),
+      );
+      if (longestStep) {
+        console.log(
+          chalk.cyan(
+            `Longest step: Step ${longestStep.stepId} (${longestStep.duration.toFixed(2)} seconds)`,
+          ),
+        );
+      }
+      console.log(chalk.green('========================================'));
+
+      // Add timing information to reports as well
+      const timingData = {
+        startTime: new Date(this.startTime).toISOString(),
+        endTime: new Date(endTime).toISOString(),
+        totalDuration: `${totalDuration.toFixed(2)} seconds`,
+        stepStats: {
+          total: stepDurations.length,
+          averageDuration: `${averageStepDuration.toFixed(2)} seconds`,
+          longestStep: longestStep
+            ? `Step ${longestStep.stepId} (${longestStep.duration.toFixed(2)} seconds)`
+            : 'N/A',
+        },
+      };
+
+      // Append timing data to markdown report
+      const timingMarkdown = `
+## Execution Statistics
+
+- **Start Time:** ${timingData.startTime}
+- **End Time:** ${timingData.endTime}
+- **Total Duration:** ${timingData.totalDuration}
+- **Number of Steps:** ${timingData.stepStats.total}
+- **Average Step Duration:** ${timingData.stepStats.averageDuration}
+- **Longest Step:** ${timingData.stepStats.longestStep}
+`;
+
+      await this.tools.fileOperations.writeFile(
+        markdownFilename,
+        reportContent + timingMarkdown,
+      );
+
       console.log(chalk.green('\n========================================'));
       console.log(chalk.yellow('REPORT GENERATED SUCCESSFULLY:'));
       console.log(chalk.green('========================================'));
@@ -455,6 +534,16 @@ export class Agent {
       console.log(chalk.green('========================================\n'));
     } catch (error) {
       this.spinner.fail(chalk.red('Failed to generate report'));
+
+      // Even if report generation fails, still show timing stats
+      const endTime = Date.now();
+      const totalDuration = (endTime - this.startTime) / 1000;
+      console.log(
+        chalk.yellow(
+          `Total execution time: ${totalDuration.toFixed(2)} seconds (${(totalDuration / 60).toFixed(2)} minutes)`,
+        ),
+      );
+
       throw error;
     }
   }
