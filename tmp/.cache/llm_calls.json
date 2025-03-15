@@ -1,0 +1,168 @@
+{
+  "d797bd2f58758ab93977d91e87c12f6435cb1a219bb852a0719f7f8a18328d8f": {
+    "data": {
+      "id": "chatcmpl-BBEgEkWCsCoAaUKZEREac1N4drMmb",
+      "object": "chat.completion",
+      "created": 1742017738,
+      "model": "gpt-4o-2024-08-06",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_icysLH4ni4uTLpxZ2ASeZCtu",
+                "type": "function",
+                "function": {
+                  "name": "doAction",
+                  "arguments": "{\"method\":\"click\",\"element\":98,\"args\":[],\"step\":\"Clicked on the first laptop listing titled 'HP 14 Laptop, Intel Celeron N4020, 4 GB RAM, 64 GB Storage, 14-inch Micro-edge HD Display, Windows 11 Home, Thin & Portable, 4K Graphics, One Year of Microsoft 365 (14-dq0040nr, Snowflake White)'.\",\"completed\":true}"
+                }
+              }
+            ],
+            "refusal": null,
+            "annotations": []
+          },
+          "logprobs": null,
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 9179,
+        "completion_tokens": 101,
+        "total_tokens": 9280,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "service_tier": "default",
+      "system_fingerprint": "fp_f9f4fb6dbf"
+    },
+    "timestamp": 1742017740800,
+    "requestId": "vcecs5936yb"
+  },
+  "af98cc6554c75a5d6642466f4fa0fd3c8463f194bf02950ed4ff56b37fbc3a1e": {
+    "data": {
+      "id": "chatcmpl-BBEkzZV5t2xIBiWwh0hBWqlGt9CqM",
+      "object": "chat.completion",
+      "created": 1742018033,
+      "model": "gpt-4o-2024-08-06",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_Ga8d6nOg4nAx0W5B0RX6mINc",
+                "type": "function",
+                "function": {
+                  "name": "doAction",
+                  "arguments": "{\"method\": \"click\", \"element\": 38, \"args\": [], \"step\": \"Clicked on the search bar to focus on it.\", \"completed\": false}"
+                }
+              },
+              {
+                "id": "call_0ShlGf3zSBdjBridluSW5d3H",
+                "type": "function",
+                "function": {
+                  "name": "doAction",
+                  "arguments": "{\"method\": \"type\", \"element\": 38, \"args\": [\"laptops\"], \"step\": \"Typed 'laptops' into the search bar.\", \"completed\": false}"
+                }
+              }
+            ],
+            "refusal": null,
+            "annotations": []
+          },
+          "logprobs": null,
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 5412,
+        "completion_tokens": 94,
+        "total_tokens": 5506,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "service_tier": "default",
+      "system_fingerprint": "fp_f9f4fb6dbf"
+    },
+    "timestamp": 1742018034779,
+    "requestId": "n1t3gahg7ls"
+  },
+  "90190c3646d8d5b2629aedcedfda9ee6342ca7d66058581f9ecf9f7f7ee5bc17": {
+    "data": {
+      "id": "chatcmpl-BBElWeqpa6FSfzbu5D1aWuGalKhfi",
+      "object": "chat.completion",
+      "created": 1742018066,
+      "model": "gpt-4o-2024-08-06",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_MtF3VmC0mYfwXTU9hh8SDmnF",
+                "type": "function",
+                "function": {
+                  "name": "doAction",
+                  "arguments": "{\"method\": \"click\", \"element\": 38, \"args\": [], \"step\": \"Clicked on the search bar to focus on it.\", \"completed\": false}"
+                }
+              },
+              {
+                "id": "call_w02bhevb3OWh9WFlbjblPPp9",
+                "type": "function",
+                "function": {
+                  "name": "doAction",
+                  "arguments": "{\"method\": \"type\", \"element\": 38, \"args\": [\"laptops\"], \"step\": \"Typed 'laptops' into the search bar.\", \"completed\": false}"
+                }
+              }
+            ],
+            "refusal": null,
+            "annotations": []
+          },
+          "logprobs": null,
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 4978,
+        "completion_tokens": 94,
+        "total_tokens": 5072,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "service_tier": "default",
+      "system_fingerprint": "fp_f9f4fb6dbf"
+    },
+    "timestamp": 1742018068508,
+    "requestId": "n1t3gahg7ls"
+  }
+}
