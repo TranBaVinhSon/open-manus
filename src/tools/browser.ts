@@ -58,11 +58,54 @@ export class BrowserTool implements Tool {
   description = 'Browse websites and extract information';
   schema = BrowserSchema;
   private browserInstalled = false;
+  private activeConnections = 0;
 
   // Singleton pattern for browser instance
   private static browserInstance: Stagehand | null = null;
   private static isBrowserInitializing = false;
   private static initPromise: Promise<Stagehand> | null = null;
+  private static isRegisteredForExit = false;
+
+  constructor() {
+    // Register exit handlers when the class is instantiated
+    this.registerExitHandlers();
+  }
+
+  /**
+   * Register process exit handlers to ensure browser is properly closed
+   */
+  private registerExitHandlers(): void {
+    // Only register once
+    if (BrowserTool.isRegisteredForExit) return;
+
+    // Handle normal exit
+    process.on('exit', () => {
+      this.closeBrowserSync();
+    });
+
+    // Handle Ctrl+C
+    process.on('SIGINT', async () => {
+      console.log('Received SIGINT, closing browser...');
+      await this.closeBrowser();
+      process.exit(0);
+    });
+
+    // Handle termination
+    process.on('SIGTERM', async () => {
+      console.log('Received SIGTERM, closing browser...');
+      await this.closeBrowser();
+      process.exit(0);
+    });
+
+    // Handle uncaught exceptions
+    process.on('uncaughtException', async (error) => {
+      console.error('Uncaught exception:', error);
+      await this.closeBrowser();
+      process.exit(1);
+    });
+
+    BrowserTool.isRegisteredForExit = true;
+  }
 
   /**
    * Execute the browser tool
@@ -75,11 +118,27 @@ export class BrowserTool implements Tool {
 
     const { url, goal } = args;
 
-    // Get or create a browser instance
-    const browser = await this.getBrowserInstance();
+    try {
+      // Increment active connections counter
+      this.activeConnections++;
 
-    // Execute the task with optimized steps
-    return this.executeWithOptimizedSteps(browser, goal, url);
+      // Get or create a browser instance
+      const browser = await this.getBrowserInstance();
+
+      // Execute the task with optimized steps
+      return await this.executeWithOptimizedSteps(browser, goal, url);
+    } finally {
+      // Decrement active connections counter
+      this.activeConnections--;
+
+      // If no active connections and not keeping browser alive, close it
+      if (
+        this.activeConnections === 0 &&
+        process.env.KEEP_BROWSER_ALIVE !== 'true'
+      ) {
+        await this.closeBrowser();
+      }
+    }
   }
 
   /**
@@ -133,12 +192,59 @@ export class BrowserTool implements Tool {
         enableCaching: true,
       });
 
-      await stagehand.init();
-      BrowserTool.browserInstance = stagehand;
-      return stagehand;
+      try {
+        await stagehand.init();
+        BrowserTool.browserInstance = stagehand;
+        return stagehand;
+      } catch (error) {
+        // Reset flags if initialization fails
+        BrowserTool.isBrowserInitializing = false;
+        BrowserTool.initPromise = null;
+        throw error;
+      }
     })();
 
     return BrowserTool.initPromise;
+  }
+
+  /**
+   * Close the browser instance properly
+   */
+  private async closeBrowser(): Promise<void> {
+    if (BrowserTool.browserInstance) {
+      console.log('Closing browser instance...');
+      try {
+        await BrowserTool.browserInstance.close();
+      } catch (error) {
+        console.error('Error closing browser:', error);
+      } finally {
+        // Reset all browser-related state
+        BrowserTool.browserInstance = null;
+        BrowserTool.isBrowserInitializing = false;
+        BrowserTool.initPromise = null;
+      }
+    }
+  }
+
+  /**
+   * Synchronous close for exit handlers
+   */
+  private closeBrowserSync(): void {
+    if (BrowserTool.browserInstance) {
+      try {
+        // Force close any browser windows in a way that doesn't use async/await
+        // This is needed for the process.on('exit') handler
+        const browser = BrowserTool.browserInstance;
+        if (browser && browser.page) {
+          browser.page.close();
+        }
+      } catch (e) {
+        // Ignore errors during forced close
+      }
+
+      // Reset browser instance
+      BrowserTool.browserInstance = null;
+    }
   }
 
   /**
@@ -350,13 +456,6 @@ export class BrowserTool implements Tool {
         totalSteps: stepCount,
         results,
       };
-    } finally {
-      // Reset the page state but keep browser open for reuse
-      try {
-        await browser.page.goto('about:blank');
-      } catch (e) {
-        // Ignore errors on cleanup
-      }
     }
   }
 
@@ -777,16 +876,10 @@ Keep actions atomic and focused on a single step.`,
   }
 
   /**
-   * Clean up resources
+   * Clean up resources and properly close the browser
    */
   async cleanup() {
-    try {
-      if (BrowserTool.browserInstance) {
-        await BrowserTool.browserInstance.page.goto('about:blank');
-      }
-    } catch (e) {
-      // Ignore cleanup errors
-    }
+    await this.closeBrowser();
   }
 }
 
