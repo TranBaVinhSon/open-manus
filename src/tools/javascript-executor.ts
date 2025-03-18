@@ -13,7 +13,7 @@ export class JavascriptExecutorTool implements Tool {
   name = 'javascriptExecutor';
   description =
     'Execute JavaScript code to calculate data or visualize results';
-  schema = JavascriptExecutorSchema;
+  parameters = JavascriptExecutorSchema;
 
   async execute(args: z.infer<typeof JavascriptExecutorSchema>) {
     const {

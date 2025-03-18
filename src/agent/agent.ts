@@ -1,11 +1,11 @@
 import { getChatCompletion } from '../llm';
 import { tools } from '../tools';
-import { AgentOptions, Plan, Step } from '../types';
+import { AgentOptions, Step } from '../types';
 import chalk from 'chalk';
 import ora from 'ora';
 import { openai } from '@ai-sdk/openai';
 import { generateText } from 'ai';
-import { z } from 'zod';
+import { optional, z } from 'zod';
 import { getSystemPrompt } from './system-prompt';
 import { generateObject } from 'ai';
 
@@ -103,8 +103,8 @@ export class Agent {
         ${previousStepsContext}
         
         AVAILABLE TOOLS:
-        - search: For web search operations
-        - browser: For web browsing, navigating pages, and extracting information
+        - search: For web search operations, use this tool to get latest information
+        - browser: For web browsing, navigating pages, performing actions, and extracting information
         - fileOperations: For reading, writing, or manipulating files
         - javascriptExecutor: For running JavaScript code
         
@@ -114,6 +114,7 @@ export class Agent {
         3. If the task is not complete, provide a specific, actionable next step
         4. The step should be detailed and tailored to the specific task
         5. Consider which tool would be most appropriate for this step
+        6. If the task is too simple and you don't need to use any tool, then just handle the task in the step description
         
         If you determine the task is complete, set isComplete to true and explain why in the reason field.
         If more work is needed, set isComplete to false, provide the next step details, and explain your reasoning.`,
@@ -167,10 +168,8 @@ export class Agent {
       // Create tools config for Vercel AI SDK
       const aiTools = {
         search: {
-          description: 'Search the web for information',
-          parameters: z.object({
-            query: z.string().describe('The search query'),
-          }),
+          description: this.tools.search.description,
+          parameters: this.tools.search.parameters,
           execute: async ({ query }: { query: string }) => {
             const result = await this.tools.search.execute(query);
             return result;
@@ -178,17 +177,8 @@ export class Agent {
         },
 
         browser: {
-          description: 'Browse a specific URL and extract information',
-          parameters: z.object({
-            url: z
-              .string()
-              .url()
-              .describe('The URL to visit to complete the task'),
-            goal: z
-              .string()
-              .optional()
-              .describe('Goal of the browsing session'),
-          }),
+          description: this.tools.browser.description,
+          parameters: this.tools.browser.parameters,
           execute: async (params: { url?: string; goal?: string }) => {
             const result = await this.tools.browser.execute(params);
             return result;
@@ -196,33 +186,10 @@ export class Agent {
         },
 
         fileOperations: {
-          description: 'Perform file operations like reading or writing files',
-          parameters: z.object({
-            operation: z.enum(['read', 'write']),
-            filename: z.string().describe('Path to the file'),
-            content: z
-              .string()
-              .optional()
-              .describe('Content to write (for write operation)'),
-          }),
-          execute: async ({
-            operation,
-            filename,
-            content,
-          }: {
-            operation: 'read' | 'write';
-            filename: string;
-            content?: string;
-          }) => {
-            if (operation === 'write' && content) {
-              return await this.tools.fileOperations.writeFile(
-                filename,
-                content,
-              );
-            } else if (operation === 'read') {
-              return await this.tools.fileOperations.readFile(filename);
-            }
-            return { success: false, message: 'Invalid operation' };
+          description: this.tools.fileOperations.description,
+          parameters: this.tools.fileOperations.parameters,
+          execute: async (params: any) => {
+            return await this.tools.fileOperations.execute(params);
           },
         },
 
@@ -247,12 +214,10 @@ export class Agent {
         // },
 
         javascriptExecutor: {
-          description: 'Execute JavaScript code',
-          parameters: z.object({
-            code: z.string().describe('JavaScript code to execute'),
-          }),
-          execute: async ({ code }: { code: string }) => {
-            return await this.tools.javascriptExecutor.execute({ code });
+          description: this.tools.javascriptExecutor.description,
+          parameters: this.tools.javascriptExecutor.parameters,
+          execute: async (params: any) => {
+            return await this.tools.javascriptExecutor.execute(params);
           },
         },
       };

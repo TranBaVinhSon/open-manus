@@ -1,6 +1,4 @@
-export interface CliOptions {
-  // Add your CLI options interface here
-}
+import { z } from 'zod';
 
 // Agent Types
 export interface AgentOptions {
@@ -14,9 +12,7 @@ export interface Tool {
   name: string;
   description: string;
   execute: (params: any) => Promise<any>;
-  query?: (query: string) => Promise<string[]>;
-  navigate?: (url: string) => Promise<void>;
-  writeFile?: (filename: string, content: string) => Promise<void>;
+  parameters: z.ZodObject<any>;
 }
 
 // Step Types

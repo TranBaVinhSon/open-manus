@@ -1,6 +1,7 @@
 import { SearchResults, Tool } from '../types';
 import dotenv from 'dotenv';
 import Exa from 'exa-js';
+import { z } from 'zod';
 
 dotenv.config();
 const apiKey = process.env.EXA_API_KEY;
@@ -13,7 +14,11 @@ const exa = new Exa(apiKey);
 export const searchTool: Tool = {
   name: 'search',
   description: 'Search the web to get latest information on any topic',
-  execute: async (query: string): Promise<SearchResults> => {
+  parameters: z.object({
+    query: z.string().describe('The search query'),
+  }),
+  execute: async (params: { query: string }): Promise<SearchResults> => {
+    const { query } = params;
     const exaResults = await exa.searchAndContents(query, {
       type: 'neural',
       useAutoprompt: true,

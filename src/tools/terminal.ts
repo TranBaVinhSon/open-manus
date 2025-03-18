@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { Tool } from '../types';
 import { existsSync } from 'fs';
+import { z } from 'zod';
 
 interface TerminalResult {
   success: boolean;
@@ -25,6 +26,14 @@ const getDefaultShell = (): string => {
 export const terminalTool: Tool = {
   name: 'terminal',
   description: 'Execute shell commands in the system terminal',
+  parameters: z.object({
+    command: z.string().describe('Shell command to execute'),
+    workingDir: z
+      .string()
+      .optional()
+      .describe('Working directory for command execution'),
+    timeout: z.number().optional().describe('Timeout in milliseconds'),
+  }),
   execute: async (params: {
     command: string;
     workingDir?: string;
