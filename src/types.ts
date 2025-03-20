@@ -71,3 +71,5 @@ export interface TerminalResult {
   error?: string;
   exitCode?: number;
 }
+
+export type FormatReportType = 'md' | 'html' | 'mdx';
