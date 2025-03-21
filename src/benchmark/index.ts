@@ -141,71 +141,20 @@ function isAnswerCorrect(groundTruth: string, modelAnswer: string): boolean {
  * Extract the final answer from agent output
  */
 function extractAnswer(output: string): string {
-  // First, clean up the output by removing any command line artifacts
+  // Clean up the output by removing any command line artifacts
   output = output.replace(/yarn run v[\d\.]+.*?\$ ts-node.*/gs, '');
   output = output.replace(/Agent started for task:.*/g, '');
   output = output.replace(/--- Step \d+ ---/g, '');
   output = output.replace(/Task completed:.*/g, '');
 
-  // First look for a clear final answer section
-  const finalAnswerSection = output.match(
-    /Final answer:\s*([\s\S]*?)(?:\n\n|\n?$)/i,
-  );
-  if (finalAnswerSection && finalAnswerSection[1]) {
-    return finalAnswerSection[1].trim();
+  // Look for the standardized Answer format console.log(`Answer: ${answer}`);
+  const answerPattern = /Answer:\s*([\s\S]*?)(?:\n\n|\n?$)/i;
+  const match = output.match(answerPattern);
+  if (match && match[1]) {
+    return match[1].trim();
+  } else {
+    return 'Can not find the answer in the output';
   }
-
-  // Look for phrases that might indicate a final answer
-  const answerPatterns = [
-    /final answer:?\s*([\s\S]*?)(?:\n\n|\n?$)/i,
-    /my answer:?\s*([\s\S]*?)(?:\n\n|\n?$)/i,
-    /answer:?\s*([\s\S]*?)(?:\n\n|\n?$)/i,
-    /conclusion:?\s*([\s\S]*?)(?:\n\n|\n?$)/i,
-    /result:?\s*([\s\S]*?)(?:\n\n|\n?$)/i,
-    /output:?\s*([\s\S]*?)(?:\n\n|\n?$)/i,
-  ];
-
-  for (const pattern of answerPatterns) {
-    const match = output.match(pattern);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-  }
-
-  // Look for a response surrounded by quotes or special formatting
-  const quotedAnswer = output.match(/"([^"]+)"/);
-  if (quotedAnswer && quotedAnswer[1]) {
-    return quotedAnswer[1].trim();
-  }
-
-  // If no clear answer pattern is found, use the last few sentences
-  const paragraphs = output.split(/\n\n+/).filter((p) => p.trim().length > 0);
-  if (paragraphs.length > 0) {
-    // Get the last paragraph that looks like an answer
-    const lastParagraph = paragraphs[paragraphs.length - 1].trim();
-
-    // If it's short, it's likely a direct answer
-    if (lastParagraph.length < 100) {
-      return lastParagraph;
-    }
-
-    // Otherwise, get the last sentence
-    const sentences = lastParagraph
-      .split(/[.!?]+/)
-      .filter((s) => s.trim().length > 0);
-    if (sentences.length > 0) {
-      return sentences[sentences.length - 1].trim();
-    }
-
-    return lastParagraph;
-  }
-
-  // If all else fails, just return the last 100 characters
-  if (output.length > 100) {
-    return output.slice(output.length - 100).trim();
-  }
-
-  return output.trim();
 }
 
 /**
@@ -223,6 +172,7 @@ async function runTask(
     // Execute the agent with the given task
     const { stdout, stderr } = await execAsync(
       `yarn start -t "${escapedQuestion}"`,
+      { maxBuffer: 5 * 1024 * 1024 },
     );
 
     // Extract only the relevant part of the output
@@ -233,16 +183,8 @@ async function runTask(
 
     console.log(`output`, output);
 
-    // Look for patterns that indicate the actual output vs. operational logs
-    const taskOutputPattern = /Task completed: (.*)$/m;
-    const completionMatch = output.match(taskOutputPattern);
-
-    console.log(`completionMatch`, completionMatch);
-
-    if (completionMatch && completionMatch[1]) {
-      // If we found a completion message, use that as the answer
-      return { output: completionMatch[1], error: null };
-    }
+    // Don't use the "Task completed" message as the answer
+    // Instead, always look for the actual content in the output
 
     // Look for the final result or answer section
     const finalResultPattern =

@@ -12,7 +12,7 @@ export interface Tool {
   name: string;
   description: string;
   execute: (params: any) => Promise<any>;
-  parameters: z.ZodObject<any>;
+  parameters: any;
 }
 
 // Step Types
@@ -45,12 +45,6 @@ export interface SearchResultItem {
   title: string;
   url: string;
   content: string;
-}
-
-export interface SearchResults {
-  results: SearchResultItem[];
-  numberOfResults?: number;
-  query: string;
 }
 
 // File Operation Types

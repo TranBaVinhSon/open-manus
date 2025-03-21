@@ -1,19 +1,27 @@
 #!/usr/bin/env ts-node
 
 import { Agent } from './agent/agent';
+import { Command } from 'commander';
 
-async function main() {
-  const args = process.argv.slice(2);
-  if (args.length === 0) {
-    console.error('Usage: agent "Your task command here"');
-    process.exit(1);
-  }
-  const task = args.join(' ');
-  const agent = new Agent({ task });
-  await agent.run();
-}
+const program = new Command();
 
-main().catch((err) => {
-  console.error('Error running agent:', err);
-  process.exit(1);
-});
+program
+  .name('open-manus')
+  .description(
+    'General AI agent CLI tool with planning and tool-using capabilities',
+  )
+  .version('0.0.1');
+
+program
+  .option('-t, --task <task>', 'The task to execute')
+  .action(async (options) => {
+    const task = options.task;
+    if (!task) {
+      console.error('Error: Task is required. Use -t or --task option.');
+      process.exit(1);
+    }
+    const agent = new Agent({ task });
+    await agent.run();
+  });
+
+program.parse();

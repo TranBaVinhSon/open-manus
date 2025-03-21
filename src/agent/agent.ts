@@ -6,8 +6,10 @@ import ora from 'ora';
 import { openai } from '@ai-sdk/openai';
 import { generateText } from 'ai';
 import { optional, z } from 'zod';
-import { getSystemPrompt } from './system-prompt';
+import { getSystemPrompt } from './prompts/system-prompt';
 import { generateObject } from 'ai';
+import { getTaskPlanningPrompt } from './prompts/task-planning-prompt';
+import { getGenerateAnswerPrompt } from './prompts/generate-answer-prompt';
 
 export class Agent {
   private task: string;
@@ -15,7 +17,7 @@ export class Agent {
   private currentStep: number = 0;
   private tools: Record<string, any>;
   private researchData: any[] = [];
-  private spinner: any;
+  private spinner: ora.Ora;
   private defaultModel: string;
 
   constructor(options: AgentOptions) {
@@ -53,11 +55,21 @@ export class Agent {
     }
 
     // Generate final report
-    if (this.researchData.length > 0) {
-      await this.generateReport();
-    }
+    // if (this.researchData.length > 0) {
+    //   await this.generateReport();
+    // }
 
-    console.log(`Agent completed after ${this.currentStep} steps.`);
+    const answer = await this.generateAnswer();
+    console.log(`Answer: ${answer}`);
+  }
+
+  private async generateAnswer(): Promise<string> {
+    const { text } = await generateText({
+      model: openai(this.defaultModel),
+      prompt: getGenerateAnswerPrompt(this.task, this.researchData),
+    });
+
+    return text;
   }
 
   private async determineNextStep(): Promise<{
@@ -73,7 +85,7 @@ export class Agent {
 
       const { object } = await generateObject({
         model: openai(this.defaultModel),
-        system: getSystemPrompt(this.task),
+        system: getSystemPrompt(),
         schema: z.object({
           isComplete: z
             .boolean()
@@ -86,38 +98,19 @@ export class Agent {
             ),
           step: z
             .object({
-              id: z.number(),
-              description: z.string(),
+              id: z.number().describe('The step number'),
+              description: z.string().describe('The next step to take'),
               status: z
                 .enum(['pending', 'running', 'completed', 'failed'])
                 .default('pending'),
-              params: z.record(z.any()).optional(),
+              params: z
+                .record(z.any())
+                .optional()
+                .describe('The parameters for the next step'),
             })
             .optional(),
         }),
-        prompt: `You are a strategic planning assistant that determines the next step in a complex task.
-
-        OVERALL TASK: "${this.task}"
-        
-        CURRENT PROGRESS:
-        ${previousStepsContext}
-        
-        AVAILABLE TOOLS:
-        - search: For web search operations, use this tool to get latest information
-        - browser: For web browsing, navigating pages, performing actions, and extracting information
-        - fileOperations: For reading, writing, or manipulating files
-        - javascriptExecutor: For running JavaScript code
-        
-        DETERMINE THE NEXT STEP:
-        1. Analyze the current progress and the overall task
-        2. Decide if the task is complete or what needs to be done next
-        3. If the task is not complete, provide a specific, actionable next step
-        4. The step should be detailed and tailored to the specific task
-        5. Consider which tool would be most appropriate for this step
-        6. If the task is too simple and you don't need to use any tool, then just handle the task in the step description
-        
-        If you determine the task is complete, set isComplete to true and explain why in the reason field.
-        If more work is needed, set isComplete to false, provide the next step details, and explain your reasoning.`,
+        prompt: getTaskPlanningPrompt(this.task, previousStepsContext),
       });
 
       this.spinner.succeed(chalk.green('Next step determined'));
@@ -169,16 +162,32 @@ export class Agent {
       const aiTools = {
         search: {
           description: this.tools.search.description,
-          parameters: this.tools.search.parameters,
-          execute: async ({ query }: { query: string }) => {
-            const result = await this.tools.search.execute(query);
+          parameters: z.object({
+            query: z.string().describe('The search query'),
+            numberOfResults: z
+              .number()
+              .describe('The number of results to return')
+              .optional(),
+          }),
+
+          execute: async (params: {
+            query: string;
+            numberOfResults?: number;
+          }) => {
+            const result = await this.tools.search.execute(params);
             return result;
           },
         },
 
         browser: {
           description: this.tools.browser.description,
-          parameters: this.tools.browser.parameters,
+          parameters: z.object({
+            url: z
+              .string()
+              .url()
+              .describe('The URL to visit to complete the task'),
+            goal: z.string().describe('Goal of the browsing session'),
+          }),
           execute: async (params: { url?: string; goal?: string }) => {
             const result = await this.tools.browser.execute(params);
             return result;
@@ -187,7 +196,19 @@ export class Agent {
 
         fileOperations: {
           description: this.tools.fileOperations.description,
-          parameters: this.tools.fileOperations.parameters,
+          parameters: z.object({
+            operation: z.enum(['read', 'write', 'list']),
+            filePath: z.string().describe('Path to the file or directory'),
+            content: z
+              .string()
+              .optional()
+              .describe('Content to write (for write operation)'),
+            encoding: z
+              .string()
+              .optional()
+              .default('utf8')
+              .describe('File encoding'),
+          }),
           execute: async (params: any) => {
             return await this.tools.fileOperations.execute(params);
           },
@@ -215,22 +236,30 @@ export class Agent {
 
         javascriptExecutor: {
           description: this.tools.javascriptExecutor.description,
-          parameters: this.tools.javascriptExecutor.parameters,
-          execute: async (params: any) => {
+          parameters: z.object({
+            description: z
+              .string()
+              .describe(
+                'Generate JavaScript code to complete the task, such as data calculation...etc and execute the code',
+              ),
+          }),
+          execute: async (params: { description: string }) => {
             return await this.tools.javascriptExecutor.execute(params);
           },
         },
       };
 
-      // Use LLM to determine which tool to use and how to use it
+      // Add detailed try/catch around the generateText call
       const result = await generateText({
-        model: openai(this.defaultModel),
+        model: openai(`gpt-4o`),
         tools: aiTools,
         prompt:
           getSystemPrompt(this.task) +
           `\n\nCurrent step: ${step.description}\nStep parameters: ${JSON.stringify(step.params || {})}\n\nPrevious steps results: ${previousStepsContext}\n\nUse the appropriate tool to complete this step. Be precise and thorough.`,
-        maxSteps: 1,
+        // maxSteps: 10,
       });
+      console.log('generateText completed successfully!');
+      console.log(`results`, JSON.stringify(result, null, 2));
 
       if (result.toolCalls && result.toolCalls.length > 0) {
         // Process each tool call
@@ -251,13 +280,13 @@ export class Agent {
                   data: toolResult,
                 });
                 break;
-              case 'browser':
-                this.researchData.push({
-                  type: 'browser',
-                  stepId: step.id,
-                  data: toolResult,
-                });
-                break;
+              // case 'browser':
+              //   this.researchData.push({
+              //     type: 'browser',
+              //     stepId: step.id,
+              //     data: toolResult,
+              //   });
+              //   break;
               case 'fileOperations':
                 this.researchData.push({
                   type: 'fileOperation',
@@ -288,12 +317,11 @@ export class Agent {
 
       console.log(chalk.green(`Completed step: ${step.description}`));
       console.log(chalk.dim('Research data updated:'));
-      console.log(JSON.stringify(this.researchData, null, 2));
-    } catch (error) {
-      step.status = 'failed';
-      step.error = (error as Error).message;
-      console.error(chalk.red(`Step failed: ${(error as Error).message}`));
-      throw error;
+      console.log(`research data`, JSON.stringify(this.researchData, null, 2));
+    } catch (genTextError) {
+      console.error('Error in generateText call:', genTextError);
+      console.error('Error details:', JSON.stringify(genTextError, null, 2));
+      throw genTextError; // Re-throw to be caught by outer try/catch
     }
   }
 
