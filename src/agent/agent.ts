@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { openai } from '@ai-sdk/openai';
 import { generateText } from 'ai';
-import { optional, z } from 'zod';
+import { z } from 'zod';
 import { getSystemPrompt } from './prompts/system-prompt';
 import { generateObject } from 'ai';
 import { getTaskPlanningPrompt } from './prompts/task-planning-prompt';
@@ -23,7 +23,7 @@ export class Agent {
 
   constructor(options: AgentOptions) {
     this.task = options.task;
-    this.maxSteps = options.maxSteps || this.maxSteps;
+    this.maxSteps = Number(process.env.MAX_STEPS) || this.maxSteps;
     this.tools = tools;
     this.spinner = ora();
     this.defaultModel = process.env.DEFAULT_LLM_MODEL || 'gpt-4o';

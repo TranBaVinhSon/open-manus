@@ -3,8 +3,6 @@ import { z } from 'zod';
 // Agent Types
 export interface AgentOptions {
   task: string;
-  llmModel?: string;
-  maxSteps?: number;
 }
 
 // Tool Types
@@ -24,22 +22,6 @@ export interface Step {
   result?: any;
 }
 
-// Plan Types
-export interface Plan {
-  task: string;
-  steps: Step[];
-  currentStepIndex: number;
-  completed: boolean;
-}
-
-// Result Types
-export interface AgentResult {
-  plan: Plan;
-  finalAnswer: string;
-  duration: number;
-}
-
-// Search Results Type
 export interface SearchResultItem {
   title: string;
   url: string;
