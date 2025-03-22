@@ -1,29 +1,35 @@
 import { z } from 'zod';
 import { Tool } from '../types';
 import { NodeVM } from 'vm2';
-
-const JavascriptExecutorSchema = z.object({
-  code: z.string().min(1, 'JavaScript code is required'),
-  timeout: z.number().positive().default(10000).optional(),
-  allowHarmfulOperations: z.boolean().default(false).optional(),
-  contextData: z.record(z.any()).optional(),
-});
+import { generateObject } from 'ai';
+import { openai } from '@ai-sdk/openai';
 
 export class JavascriptExecutorTool implements Tool {
   name = 'javascriptExecutor';
   description =
-    'Execute JavaScript code to calculate data or visualize results';
-  schema = JavascriptExecutorSchema;
+    'Generate JavaScript code to complete the task, such as data calculation...etc and execute the code';
+  parameters: any;
 
-  async execute(args: z.infer<typeof JavascriptExecutorSchema>) {
-    const {
-      code,
-      timeout = 10000,
-      allowHarmfulOperations = false,
-      contextData = {},
-    } = args;
+  async execute(params: { description: string }) {
+    const { description } = params;
 
     try {
+      // Generate JavaScript code using LLM based on the description
+      const { object: generatedCode } = await generateObject({
+        model: openai(process.env.DEFAULT_LLM_MODEL || 'gpt-4o-mini'),
+        schema: z.object({
+          code: z.string().describe('The generated JavaScript code'),
+        }),
+        prompt: `Generate JavaScript code to accomplish this task: ${description}. 
+                      The code should be executable in a Node.js environment.
+                      Return only the code, without any comments or explanations.`,
+      });
+
+      const code = generatedCode.code;
+      const timeout = 10000;
+      const allowHarmfulOperations = false;
+      const contextData = {};
+
       // Create a sandboxed environment using vm2
       const vm = new NodeVM({
         console: 'inherit',
@@ -46,8 +52,13 @@ export class JavascriptExecutorTool implements Tool {
         }
       })();`);
 
-      // Return the execution result
-      return await result;
+      // Return the execution result and the code that was generated
+      const executionResult = await result;
+      return {
+        code,
+        result: executionResult,
+        success: !executionResult?.error,
+      };
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : 'Unknown error occurred';

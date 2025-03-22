@@ -3,3 +3,6 @@ dist/
 .env
 .DS_Store 
 results/*
+src/benchmark/results/*
+src/benchmark/2023/*
+tasks/*
