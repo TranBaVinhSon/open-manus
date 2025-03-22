@@ -21,7 +21,6 @@ export interface Step {
   description: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   error?: string;
-  params?: Record<string, any>;
   result?: any;
 }
 

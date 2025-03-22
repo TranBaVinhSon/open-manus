@@ -19,6 +19,7 @@ export class Agent {
   private researchData: any[] = [];
   private spinner: ora.Ora;
   private defaultModel: string;
+  private taskPlanningModel: string;
 
   constructor(options: AgentOptions) {
     this.task = options.task;
@@ -26,6 +27,7 @@ export class Agent {
     this.tools = tools;
     this.spinner = ora();
     this.defaultModel = process.env.DEFAULT_LLM_MODEL || 'gpt-4o';
+    this.taskPlanningModel = process.env.TASK_PLANNING_MODEL || 'o3-mini';
   }
 
   async run(): Promise<void> {
@@ -55,12 +57,11 @@ export class Agent {
     }
 
     // Generate final report
-    // if (this.researchData.length > 0) {
-    //   await this.generateReport();
-    // }
-
-    const answer = await this.generateAnswer();
-    console.log(`Answer: ${answer}`);
+    if (this.researchData.length > 0) {
+      // await this.generateReport();
+      const answer = await this.generateAnswer();
+      console.log(`Answer: ${answer}`);
+    }
   }
 
   private async generateAnswer(): Promise<string> {
@@ -84,7 +85,9 @@ export class Agent {
       const previousStepsContext = this.getPreviousStepsContext();
 
       const { object } = await generateObject({
-        model: openai(this.defaultModel),
+        model: openai(this.taskPlanningModel, {
+          structuredOutputs: false,
+        }),
         system: getSystemPrompt(),
         schema: z.object({
           isComplete: z
@@ -101,12 +104,10 @@ export class Agent {
               id: z.number().describe('The step number'),
               description: z.string().describe('The next step to take'),
               status: z
-                .enum(['pending', 'running', 'completed', 'failed'])
-                .default('pending'),
-              params: z
-                .record(z.any())
-                .optional()
-                .describe('The parameters for the next step'),
+                .string()
+                .describe(
+                  'The status of the step (pending, running, completed, or failed)',
+                ),
             })
             .optional(),
         }),
@@ -131,7 +132,6 @@ export class Agent {
           description:
             object.step?.description || 'Error: No step description provided',
           status: 'pending',
-          params: object.step?.params || {},
         };
 
         console.log(chalk.yellow('\nNext step:'));
@@ -249,17 +249,14 @@ export class Agent {
         },
       };
 
-      // Add detailed try/catch around the generateText call
       const result = await generateText({
-        model: openai(`gpt-4o`),
+        model: openai(this.defaultModel),
         tools: aiTools,
         prompt:
           getSystemPrompt(this.task) +
-          `\n\nCurrent step: ${step.description}\nStep parameters: ${JSON.stringify(step.params || {})}\n\nPrevious steps results: ${previousStepsContext}\n\nUse the appropriate tool to complete this step. Be precise and thorough.`,
+          `\n\nCurrent step: ${step.description}\n\nPrevious steps results: ${previousStepsContext}\n\nUse the appropriate tool to complete this step. Be precise and thorough.`,
         // maxSteps: 10,
       });
-      console.log('generateText completed successfully!');
-      console.log(`results`, JSON.stringify(result, null, 2));
 
       if (result.toolCalls && result.toolCalls.length > 0) {
         // Process each tool call
@@ -280,13 +277,13 @@ export class Agent {
                   data: toolResult,
                 });
                 break;
-              // case 'browser':
-              //   this.researchData.push({
-              //     type: 'browser',
-              //     stepId: step.id,
-              //     data: toolResult,
-              //   });
-              //   break;
+              case 'browser':
+                this.researchData.push({
+                  type: 'browser',
+                  stepId: step.id,
+                  data: toolResult,
+                });
+                break;
               case 'fileOperations':
                 this.researchData.push({
                   type: 'fileOperation',
