@@ -4,6 +4,8 @@ import dayjs from 'dayjs';
 import duration from 'dayjs/plugin/duration';
 import { AgentReportFormat } from '../enums/agent';
 import { getGenerateAnswerPrompt } from './prompts/generate-answer-prompt';
+import { generateText } from 'ai';
+import openai from 'openai';
 
 dayjs.extend(duration);
 
@@ -157,9 +159,15 @@ export class ReportGenerator {
   private async generateTerminalResponse(): Promise<void> {
     this.spinner.start(chalk.blue('Generating terminal response...'));
 
-    const terminalResponse = getGenerateAnswerPrompt(
-      this.task,
-      this.researchData,
+    const terminalResponsePrompt = [
+      {
+        role: 'system',
+        content: getGenerateAnswerPrompt(this.task, this.researchData),
+      },
+    ];
+    const terminalResponse = await getChatCompletion(
+      terminalResponsePrompt,
+      this.model,
     );
     this.spinner.succeed(chalk.green('Terminal response ready'));
 
