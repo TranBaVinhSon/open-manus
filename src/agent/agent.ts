@@ -1,19 +1,20 @@
 import { getChatCompletion } from '../llm';
 import { tools } from '../tools';
-import { AgentOptions, Plan, Step, FormatReportType } from '../types';
+import { AgentOptions, Step } from '../types';
 import chalk from 'chalk';
 import ora from 'ora';
 import { openai } from '@ai-sdk/openai';
 import { generateText } from 'ai';
 import { z } from 'zod';
-import { getSystemPrompt } from './system-prompt';
+import { getSystemPrompt } from './prompts/system-prompt';
 import { generateObject } from 'ai';
 import dayjs from 'dayjs';
 import duration from 'dayjs/plugin/duration';
-import { AgentReportFormat } from '../enums/agent';
 import { ReportGenerator, ExecutionStats } from './report-generator';
 
 dayjs.extend(duration);
+import { getTaskPlanningPrompt } from './prompts/task-planning-prompt';
+import { getGenerateAnswerPrompt } from './prompts/generate-answer-prompt';
 
 export class Agent {
   private task: string;
@@ -21,17 +22,19 @@ export class Agent {
   private currentStep: number = 0;
   private tools: Record<string, any>;
   private researchData: any[] = [];
-  private spinner: any;
+  private spinner: ora.Ora;
   private defaultModel: string;
   private startTime: bigint;
+  private taskPlanningModel: string;
 
   constructor(options: AgentOptions) {
     this.task = options.task;
-    this.maxSteps = options.maxSteps || this.maxSteps;
+    this.maxSteps = Number(process.env.MAX_STEPS) || this.maxSteps;
     this.tools = tools;
     this.spinner = ora();
     this.defaultModel = process.env.DEFAULT_LLM_MODEL || 'gpt-4o';
     this.startTime = process.hrtime.bigint();
+    this.taskPlanningModel = process.env.TASK_PLANNING_MODEL || 'o3-mini';
   }
 
   async run(): Promise<void> {
@@ -60,12 +63,18 @@ export class Agent {
       }
     }
 
-    // Generate final report
     if (this.researchData.length > 0) {
       await this.generateReport();
     }
+  }
 
-    console.log(`Agent completed after ${this.currentStep} steps.`);
+  private async generateAnswer(): Promise<string> {
+    const { text } = await generateText({
+      model: openai(this.defaultModel),
+      prompt: getGenerateAnswerPrompt(this.task, this.researchData),
+    });
+
+    return text;
   }
 
   private async determineNextStep(): Promise<{
@@ -80,8 +89,10 @@ export class Agent {
       const previousStepsContext = this.getPreviousStepsContext();
 
       const { object } = await generateObject({
-        model: openai(this.defaultModel),
-        system: getSystemPrompt(this.task),
+        model: openai(this.taskPlanningModel, {
+          structuredOutputs: false,
+        }),
+        system: getSystemPrompt(),
         schema: z.object({
           isComplete: z
             .boolean()
@@ -94,37 +105,17 @@ export class Agent {
             ),
           step: z
             .object({
-              id: z.number(),
-              description: z.string(),
+              id: z.number().describe('The step number'),
+              description: z.string().describe('The next step to take'),
               status: z
-                .enum(['pending', 'running', 'completed', 'failed'])
-                .default('pending'),
-              params: z.record(z.any()).optional(),
+                .string()
+                .describe(
+                  'The status of the step (pending, running, completed, or failed)',
+                ),
             })
             .optional(),
         }),
-        prompt: `You are a strategic planning assistant that determines the next step in a complex task.
-
-        OVERALL TASK: "${this.task}"
-        
-        CURRENT PROGRESS:
-        ${previousStepsContext}
-        
-        AVAILABLE TOOLS:
-        - search: For web search operations
-        - browser: For web browsing, navigating pages, and extracting information
-        - fileOperations: For reading, writing, or manipulating files
-        - javascriptExecutor: For running JavaScript code
-        
-        DETERMINE THE NEXT STEP:
-        1. Analyze the current progress and the overall task
-        2. Decide if the task is complete or what needs to be done next
-        3. If the task is not complete, provide a specific, actionable next step
-        4. The step should be detailed and tailored to the specific task
-        5. Consider which tool would be most appropriate for this step
-        
-        If you determine the task is complete, set isComplete to true and explain why in the reason field.
-        If more work is needed, set isComplete to false, provide the next step details, and explain your reasoning.`,
+        prompt: getTaskPlanningPrompt(this.task, previousStepsContext),
       });
 
       this.spinner.succeed(chalk.green('Next step determined'));
@@ -145,7 +136,6 @@ export class Agent {
           description:
             object.step?.description || 'Error: No step description provided',
           status: 'pending',
-          params: object.step?.params || {},
         };
 
         console.log(chalk.yellow('\nNext step:'));
@@ -175,27 +165,32 @@ export class Agent {
       // Create tools config for Vercel AI SDK
       const aiTools = {
         search: {
-          description: 'Search the web for information',
+          description: this.tools.search.description,
           parameters: z.object({
             query: z.string().describe('The search query'),
+            numberOfResults: z
+              .number()
+              .describe('The number of results to return')
+              .optional(),
           }),
-          execute: async ({ query }: { query: string }) => {
-            const result = await this.tools.search.execute(query);
+
+          execute: async (params: {
+            query: string;
+            numberOfResults?: number;
+          }) => {
+            const result = await this.tools.search.execute(params);
             return result;
           },
         },
 
         browser: {
-          description: 'Browse a specific URL and extract information',
+          description: this.tools.browser.description,
           parameters: z.object({
             url: z
               .string()
               .url()
               .describe('The URL to visit to complete the task'),
-            goal: z
-              .string()
-              .optional()
-              .describe('Goal of the browsing session'),
+            goal: z.string().describe('Goal of the browsing session'),
           }),
           execute: async (params: { url?: string; goal?: string }) => {
             const result = await this.tools.browser.execute(params);
@@ -204,33 +199,22 @@ export class Agent {
         },
 
         fileOperations: {
-          description: 'Perform file operations like reading or writing files',
+          description: this.tools.fileOperations.description,
           parameters: z.object({
-            operation: z.enum(['read', 'write']),
-            filename: z.string().describe('Path to the file'),
+            operation: z.enum(['read', 'write', 'list']),
+            filePath: z.string().describe('Path to the file or directory'),
             content: z
               .string()
               .optional()
               .describe('Content to write (for write operation)'),
+            encoding: z
+              .string()
+              .optional()
+              .default('utf8')
+              .describe('File encoding'),
           }),
-          execute: async ({
-            operation,
-            filename,
-            content,
-          }: {
-            operation: 'read' | 'write';
-            filename: string;
-            content?: string;
-          }) => {
-            if (operation === 'write' && content) {
-              return await this.tools.fileOperations.writeFile(
-                filename,
-                content,
-              );
-            } else if (operation === 'read') {
-              return await this.tools.fileOperations.readFile(filename);
-            }
-            return { success: false, message: 'Invalid operation' };
+          execute: async (params: any) => {
+            return await this.tools.fileOperations.execute(params);
           },
         },
 
@@ -255,24 +239,27 @@ export class Agent {
         // },
 
         javascriptExecutor: {
-          description: 'Execute JavaScript code',
+          description: this.tools.javascriptExecutor.description,
           parameters: z.object({
-            code: z.string().describe('JavaScript code to execute'),
+            description: z
+              .string()
+              .describe(
+                'Generate JavaScript code to complete the task, such as data calculation...etc and execute the code',
+              ),
           }),
-          execute: async ({ code }: { code: string }) => {
-            return await this.tools.javascriptExecutor.execute({ code });
+          execute: async (params: { description: string }) => {
+            return await this.tools.javascriptExecutor.execute(params);
           },
         },
       };
 
-      // Use LLM to determine which tool to use and how to use it
       const result = await generateText({
         model: openai(this.defaultModel),
         tools: aiTools,
         prompt:
           getSystemPrompt(this.task) +
-          `\n\nCurrent step: ${step.description}\nStep parameters: ${JSON.stringify(step.params || {})}\n\nPrevious steps results: ${previousStepsContext}\n\nUse the appropriate tool to complete this step. Be precise and thorough.`,
-        maxSteps: 1,
+          `\n\nCurrent step: ${step.description}\n\nPrevious steps results: ${previousStepsContext}\n\nUse the appropriate tool to complete this step. Be precise and thorough.`,
+        // maxSteps: 10,
       });
 
       if (result.toolCalls && result.toolCalls.length > 0) {
@@ -331,12 +318,11 @@ export class Agent {
 
       console.log(chalk.green(`Completed step: ${step.description}`));
       console.log(chalk.dim('Research data updated:'));
-      console.log(JSON.stringify(this.researchData, null, 2));
-    } catch (error) {
-      step.status = 'failed';
-      step.error = (error as Error).message;
-      console.error(chalk.red(`Step failed: ${(error as Error).message}`));
-      throw error;
+      console.log(`research data`, JSON.stringify(this.researchData, null, 2));
+    } catch (genTextError) {
+      console.error('Error in generateText call:', genTextError);
+      console.error('Error details:', JSON.stringify(genTextError, null, 2));
+      throw genTextError;
     }
   }
 
@@ -386,6 +372,7 @@ export class Agent {
   }
 
   private async generateReport(): Promise<void> {
+    console.log(chalk.blue('\nChecking if a detailed report is needed...'));
     const executionStats = this.calculateExecutionStats();
 
     const reportGenerator = new ReportGenerator({
@@ -394,6 +381,7 @@ export class Agent {
       tools: this.tools,
       spinner: this.spinner,
       executionStats,
+      model: this.defaultModel,
     });
 
     await reportGenerator.generateReport();

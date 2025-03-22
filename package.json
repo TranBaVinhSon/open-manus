@@ -6,7 +6,8 @@
   "scripts": {
     "start": "ts-node src/main.ts",
     "build": "tsc",
-    "dev": "ts-node-dev --respawn src/main.ts"
+    "dev": "ts-node-dev --respawn src/main.ts",
+    "benchmark": "ts-node src/benchmark/index.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.2.1",

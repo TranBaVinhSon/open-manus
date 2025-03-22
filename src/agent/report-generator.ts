@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import dayjs from 'dayjs';
 import duration from 'dayjs/plugin/duration';
 import { AgentReportFormat } from '../enums/agent';
+import { getGenerateAnswerPrompt } from './prompts/generate-answer-prompt';
 
 dayjs.extend(duration);
 
@@ -20,6 +21,7 @@ export interface ReportGeneratorOptions {
   tools: Record<string, any>;
   spinner: any;
   executionStats: ExecutionStats;
+  model?: string;
 }
 
 export class ReportGenerator {
@@ -28,6 +30,7 @@ export class ReportGenerator {
   private tools: Record<string, any>;
   private spinner: any;
   private executionStats: ExecutionStats;
+  private model: string;
 
   constructor(options: ReportGeneratorOptions) {
     this.task = options.task;
@@ -35,6 +38,7 @@ export class ReportGenerator {
     this.tools = options.tools;
     this.spinner = options.spinner;
     this.executionStats = options.executionStats;
+    this.model = options.model || process.env.DEFAULT_LLM_MODEL || 'gpt-4o';
   }
 
   public async generateReport(): Promise<void> {
@@ -45,8 +49,13 @@ export class ReportGenerator {
         await this.shouldGenerateReportAndFormat();
 
       if (!shouldGenerate) {
-        this.spinner.succeed(chalk.yellow('No report needed for this task'));
-        await this.generateTerminalResponse();
+        this.spinner.succeed(
+          chalk.yellow(
+            'No detailed report needed - concise answer already provided',
+          ),
+        );
+        this.generateTerminalResponse();
+        this.displayExecutionStats();
         return;
       }
 
@@ -83,20 +92,22 @@ export class ReportGenerator {
       {
         role: 'system',
         content:
-          'You analyze tasks to determine if a report should be generated. Respond with just yes or no.',
+          'You analyze tasks to determine if a detailed report should be generated. Respond with just yes or no.',
       },
       {
         role: 'user',
         content:
-          'Based on this task and research data, should a report be generated? Answer with just "yes" or "no".\n\nTASK: ' +
+          'Based on this task and research data, should a detailed report be generated? A concise answer has already been displayed in the terminal. Only generate a report if the task requires more detailed information, data visualization, or structured analysis.\n\nAnswer with just "yes" or "no".\n\nTASK: ' +
           this.task +
           '\n\nRESEARCH DATA TYPES: ' +
           this.researchData.map((d) => d.type).join(', ') +
           '\n\nRespond with just ONE of the following: "yes" or "no".',
       },
     ];
-    const shouldGenerateResponse =
-      await getChatCompletion(shouldGeneratePrompt);
+    const shouldGenerateResponse = await getChatCompletion(
+      shouldGeneratePrompt,
+      this.model,
+    );
     const shouldGenerate =
       shouldGenerateResponse?.trim().toLowerCase() === 'yes';
 
@@ -125,7 +136,7 @@ export class ReportGenerator {
       },
     ];
 
-    const formatResponse = await getChatCompletion(formatPrompt);
+    const formatResponse = await getChatCompletion(formatPrompt, this.model);
     const formatStr = formatResponse?.trim().toLowerCase() || 'md';
 
     let format: AgentReportFormat;
@@ -146,35 +157,10 @@ export class ReportGenerator {
   private async generateTerminalResponse(): Promise<void> {
     this.spinner.start(chalk.blue('Generating terminal response...'));
 
-    const terminalResponsePrompt = [
-      {
-        role: 'system',
-        content:
-          'You are a precise assistant that extracts key findings from research data and presents them in a clear, concise format for terminal display. Use visual formatting markers that can be rendered in the terminal.',
-      },
-      {
-        role: 'user',
-        content:
-          'Extract the most important findings or answer from this research data to display in the terminal. Be direct and concise.\n\n' +
-          'TASK: ' +
-          this.task +
-          '\n\n' +
-          'RESEARCH DATA:\n' +
-          JSON.stringify(this.researchData, null, 2) +
-          '\n\n' +
-          'Format your response as a clear answer that directly addresses the task. Focus on the key information only.\n\n' +
-          'Structure your response with these formatting guidelines:\n' +
-          '1. Start with a concise summary line (no more than two sentences)\n' +
-          '2. Use "**Key Facts**:" to introduce important information\n' +
-          '3. Format key-value pairs like: "**Name**: Value"\n' +
-          '4. Use bullet points with "- " for lists\n' +
-          '5. Group related information together\n' +
-          '6. For multi-level lists, use proper indentation\n\n' +
-          'The goal is to create a visually structured response that will look good when displayed with terminal colors and formatting.',
-      },
-    ];
-
-    const terminalResponse = await getChatCompletion(terminalResponsePrompt);
+    const terminalResponse = getGenerateAnswerPrompt(
+      this.task,
+      this.researchData,
+    );
     this.spinner.succeed(chalk.green('Terminal response ready'));
 
     this.displayTerminalResponse(terminalResponse);
@@ -332,7 +318,7 @@ export class ReportGenerator {
           '\n\nRespond with just one word.',
       },
     ];
-    return await getChatCompletion(reportTypePrompt);
+    return await getChatCompletion(reportTypePrompt, this.model);
   }
 
   private async createReportContent(reportType: string): Promise<string> {
@@ -389,7 +375,7 @@ export class ReportGenerator {
       },
     ];
 
-    return await getChatCompletion(reportPrompt);
+    return await getChatCompletion(reportPrompt, this.model);
   }
 
   private async convertToHtml(markdownContent: string): Promise<string> {
@@ -425,7 +411,7 @@ export class ReportGenerator {
       },
     ];
 
-    return await getChatCompletion(htmlPrompt);
+    return await getChatCompletion(htmlPrompt, this.model);
   }
 
   private async convertToMdx(markdownContent: string): Promise<string> {
@@ -456,6 +442,6 @@ export class ReportGenerator {
       },
     ];
 
-    return await getChatCompletion(mdxPrompt);
+    return await getChatCompletion(mdxPrompt, this.model);
   }
 }

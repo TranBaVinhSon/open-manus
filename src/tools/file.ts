@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { FileOperationResult, Tool } from '../types';
 import crypto from 'crypto';
+import { z } from 'zod';
 
 // Use fs.promises functions directly
 const readFileAsync = fs.readFile;
@@ -14,6 +15,7 @@ const readdirAsync = fs.readdir;
 // File operations tool
 export const fileOperationsTool: Tool & {
   readFile(filename: string): Promise<string>;
+  writeFile(filename: string, content: string): Promise<void>;
   initializeTaskEnvironment(): Promise<void>;
   generateOutputFilePath(
     taskName: string,
@@ -30,6 +32,15 @@ export const fileOperationsTool: Tool & {
 } = {
   name: 'fileOperations',
   description: 'Read and write files on the local filesystem',
+  parameters: z.object({
+    operation: z.enum(['read', 'write', 'list']),
+    filePath: z.string().describe('Path to the file or directory'),
+    content: z
+      .string()
+      .optional()
+      .describe('Content to write (for write operation)'),
+    encoding: z.string().optional().default('utf8').describe('File encoding'),
+  }),
   execute: async (
     params: Record<string, any>,
   ): Promise<FileOperationResult> => {

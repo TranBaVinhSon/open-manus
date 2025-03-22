@@ -4,7 +4,7 @@ export interface Tool {
   name: string;
   description: string;
   execute: (args: any) => Promise<any>;
-  schema: z.ZodObject<any>;
+  parameters: z.ZodObject<any>;
 }
 
 export interface Step {
