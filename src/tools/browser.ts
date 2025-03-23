@@ -116,8 +116,6 @@ export class BrowserTool implements Tool {
 
     // Get maximum steps from environment variable with default fallback
     const MAX_STEPS = parseInt(process.env.MAX_STEPS || '10');
-    // Add loop detection variables
-    const MAX_SIMILAR_STEPS = 3;
 
     // Initialize a Stagehand instance for atomic operations
     const stagehandInstance = new Stagehand({
