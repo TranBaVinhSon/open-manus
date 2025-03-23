@@ -10,9 +10,9 @@ An experimental AI agent project inspired by Manus. This is an attempt at buildi
 
 ## Demo
 
-<video width="600" controls>
-  <source src="/static/demo.mp4" type="video/mp4">
-  Your browser does not support the video tag.
+<video width="640" height="360" controls>
+  <source src="https://github.com/user-attachments/assets/f1d425e9-b0f6-4479-81f4-b1a69bef6224" type="video/mp4">
+  Your browser does not support the video tag. <a href="https://github.com/user-attachments/assets/f1d425e9-b0f6-4479-81f4-b1a69bef6224">Click here to view the demo video</a>
 </video>
 
 <p>Example: "Visit the official YC website and compile all enterprise information from F24 and B2B tag into a clear, well-structured table. Be sure to find all of it."</p>
@@ -24,8 +24,11 @@ An experimental AI agent project inspired by Manus. This is an attempt at buildi
 - Deep search capabilities
 - Code Interpreter using Javascript for complex calculations and data analysis
 - Computer Use capabilities (file operations, terminal commands, system interactions)
-- Report generation in both Markdown and HTML formats
+- Running agent inside isolated environment such as remote server or docker container
+- Comprehensive report generation in both Markdown and HTML formats
 - Step-by-step task execution with planning and reasoning
+- Interactive CLI (User can give input during the task execution process)
+- Running GAIA benchmark
 
 ## Setup
 
@@ -51,6 +54,7 @@ An experimental AI agent project inspired by Manus. This is an attempt at buildi
    OPENAI_API_KEY=your_openai_api_key_here
    EXA_API_KEY=your_exa_api_key_here
    DEFAULT_LLM_MODEL=gpt-4o-mini
+   TASK_PLANNING_MODEL=o3-mini
    MAX_SUBTASKS=10
    MAX_STEPS=20
    ```
