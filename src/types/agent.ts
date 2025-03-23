@@ -37,3 +37,4 @@ export interface AgentConfig {
   temperature: number;
   apiKey: string;
 }
+

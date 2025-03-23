@@ -8,6 +8,11 @@ import { generateText } from 'ai';
 import { z } from 'zod';
 import { getSystemPrompt } from './prompts/system-prompt';
 import { generateObject } from 'ai';
+import dayjs from 'dayjs';
+import duration from 'dayjs/plugin/duration';
+import { ReportGenerator, ExecutionStats } from './report-generator';
+
+dayjs.extend(duration);
 import { getTaskPlanningPrompt } from './prompts/task-planning-prompt';
 import { getGenerateAnswerPrompt } from './prompts/generate-answer-prompt';
 
@@ -19,6 +24,7 @@ export class Agent {
   private researchData: any[] = [];
   private spinner: ora.Ora;
   private defaultModel: string;
+  private startTime: bigint;
   private taskPlanningModel: string;
 
   constructor(options: AgentOptions) {
@@ -27,6 +33,7 @@ export class Agent {
     this.tools = tools;
     this.spinner = ora();
     this.defaultModel = process.env.DEFAULT_LLM_MODEL || 'gpt-4o';
+    this.startTime = process.hrtime.bigint();
     this.taskPlanningModel = process.env.TASK_PLANNING_MODEL || 'o3-mini';
   }
 
@@ -56,11 +63,8 @@ export class Agent {
       }
     }
 
-    // Generate final report
     if (this.researchData.length > 0) {
-      // await this.generateReport();
-      const answer = await this.generateAnswer();
-      console.log(`Answer: ${answer}`);
+      await this.generateReport();
     }
   }
 
@@ -318,7 +322,7 @@ export class Agent {
     } catch (genTextError) {
       console.error('Error in generateText call:', genTextError);
       console.error('Error details:', JSON.stringify(genTextError, null, 2));
-      throw genTextError; // Re-throw to be caught by outer try/catch
+      throw genTextError;
     }
   }
 
@@ -338,114 +342,48 @@ export class Agent {
     return context;
   }
 
+  private calculateExecutionStats(): ExecutionStats {
+    const endTime = process.hrtime.bigint();
+    const executionTimeSeconds =
+      Number(endTime - this.startTime) / 1_000_000_000;
+
+    const stepDurations = this.researchData.map((data, index, array) => {
+      return index > 0
+        ? (array[index].stepId - array[index - 1].stepId) *
+            (executionTimeSeconds / this.currentStep)
+        : executionTimeSeconds / this.currentStep;
+    });
+
+    const avgStepDuration =
+      stepDurations.length > 0
+        ? stepDurations.reduce((a, b) => a + b, 0) / stepDurations.length
+        : 0;
+
+    const longestStep =
+      stepDurations.length > 0 ? Math.max(...stepDurations) : 0;
+
+    return {
+      executionTimeSeconds,
+      stepDurations,
+      avgStepDuration,
+      longestStep,
+      totalSteps: this.currentStep,
+    };
+  }
+
   private async generateReport(): Promise<void> {
-    this.spinner.start(chalk.blue('Generating final report...'));
+    console.log(chalk.blue('\nChecking if a detailed report is needed...'));
+    const executionStats = this.calculateExecutionStats();
 
-    try {
-      const reportPrompt = [
-        {
-          role: 'system',
-          content:
-            'You are an expert report writer who specializes in creating comprehensive and well-structured reports across various domains.',
-        },
-        {
-          role: 'user',
-          content: `Create a comprehensive markdown report based on the following:
-          
-          TASK: ${this.task}
-          
-          RESEARCH DATA:
-          ${JSON.stringify(this.researchData, null, 2)}
-          
-          COMPLETED STEPS:
-          ${JSON.stringify(
-            this.researchData.map((data) => ({
-              id: data.stepId,
-              description:
-                data.type === 'search'
-                  ? data.data.query
-                  : data.type === 'browser'
-                    ? data.data.url
-                    : data.type === 'fileOperation'
-                      ? data.data.filename
-                      : data.data.code,
-              status: 'completed',
-            })),
-            null,
-            2,
-          )}
-          
-          Important instructions:
-          1. Follow the exact structure provided in the table of contents
-          2. Include all section headers exactly as shown in the table of contents
-          3. For each completed step, provide a detailed analysis of what was done and what was found
-          4. Create proper anchor links that match the table of contents
-          5. Where relevant data exists, suggest what type of chart or visualization would be appropriate
-          6. Format the report in clean markdown with proper headers, lists, and emphasis
-          7. Ensure all anchor IDs match exactly what's in the table of contents for proper navigation
-          
-          Return the Markdown content only, no other text or comments.`,
-        },
-      ];
+    const reportGenerator = new ReportGenerator({
+      task: this.task,
+      researchData: this.researchData,
+      tools: this.tools,
+      spinner: this.spinner,
+      executionStats,
+      model: this.defaultModel,
+    });
 
-      const reportContent = await getChatCompletion(reportPrompt);
-
-      // Save as markdown
-      const timestamp = Date.now();
-      const markdownFilename = `results/report-${timestamp}.md`;
-      await this.tools.fileOperations.writeFile(
-        markdownFilename,
-        reportContent,
-      );
-
-      this.spinner.succeed(chalk.green('Markdown report generated'));
-      this.spinner.start(chalk.blue('Converting to HTML...'));
-
-      // Convert to HTML with styling
-      const htmlPrompt = [
-        {
-          role: 'system',
-          content:
-            'You are an expert at converting markdown to beautiful HTML with CSS styling and interactive JavaScript visualizations.',
-        },
-        {
-          role: 'user',
-          content: `Convert this markdown to clean, well-formatted HTML with professional styling:
-          ${reportContent}
-          
-          Requirements:
-          1. Use modern CSS for responsive, professional styling
-          2. Include Chart.js (from CDN) for data visualizations
-          3. Where the report suggests charts or visualizations, generate the appropriate Chart.js code
-          4. Analyze numeric data in the report and create suitable visualizations
-          5. Create a collapsible/expandable table of contents for easy navigation
-          6. Include smooth scrolling for anchor links
-          7. Add a fixed navigation bar that shows current section
-          8. Use syntax highlighting for any code blocks
-          9. Make all data tables responsive and sortable where appropriate
-          10. Ensure the page is self-contained with all needed scripts and styles
-          
-          Return the HTML content only, no other text or comments.
-          `,
-        },
-      ];
-
-      const htmlContent = await getChatCompletion(htmlPrompt);
-
-      const htmlFilename = `results/report-${timestamp}.html`;
-      await this.tools.fileOperations.writeFile(htmlFilename, htmlContent);
-
-      this.spinner.succeed(chalk.green('HTML report generated'));
-
-      console.log(chalk.green('\n========================================'));
-      console.log(chalk.yellow('REPORT GENERATED SUCCESSFULLY:'));
-      console.log(chalk.green('========================================'));
-      console.log(chalk.cyan(`- Markdown: ${markdownFilename}`));
-      console.log(chalk.cyan(`- HTML: ${htmlFilename}`));
-      console.log(chalk.green('========================================\n'));
-    } catch (error) {
-      this.spinner.fail(chalk.red('Failed to generate report'));
-      throw error;
-    }
+    await reportGenerator.generateReport();
   }
 }
